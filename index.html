@@ -64,6 +64,7 @@
       font-size: 12px;
       line-height: 1.6;
       color: #555;
+      white-space: pre-line;
       overflow-wrap: anywhere;
     }
 
@@ -91,6 +92,11 @@
       background: #36414c;
     }
 
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .hint {
       color: #666;
       font-size: 12px;
@@ -116,13 +122,11 @@
 
 <body>
 
-  <!-- Your existing ArcGIS Online scene -->
   <arcgis-scene
     id="scene"
     item-id="c71ad5b695274ab2b74b06e705f3ea57">
   </arcgis-scene>
 
-  <!-- Camera controls -->
   <div class="panel" id="controls-panel">
     <div class="heading">3D Tools</div>
 
@@ -130,17 +134,20 @@
       Set eye level (1.9 m)
     </button>
 
+    <button id="zoom-button" class="secondary" disabled>
+      Zoom to selected point
+    </button>
+
     <button id="clear-button" class="secondary">
       Clear selected point
     </button>
 
     <div class="hint">
-      Click a LiDAR point to highlight it
-      and calculate its height above ground.
+      Click a LiDAR point to highlight it and calculate its
+      height above ground.
     </div>
   </div>
 
-  <!-- Measurement results -->
   <div class="panel" id="result-panel">
     <div class="heading">LiDAR Height Inspector</div>
 
@@ -159,19 +166,22 @@
     const details = document.querySelector("#details");
 
     const eyeButton = document.querySelector("#eye-level-button");
+    const zoomButton = document.querySelector("#zoom-button");
     const clearButton = document.querySelector("#clear-button");
 
-    // Wait for the web scene to finish loading.
+    let selectedPoint = null;
+    let selectionVersion = 0;
+
     await scene.viewOnReady();
 
     const view = scene.view;
 
-    // Create a separate graphics layer for the selection marker.
     const [GraphicsLayer, Graphic] = await $arcgis.import([
       "@arcgis/core/layers/GraphicsLayer.js",
       "@arcgis/core/Graphic.js"
     ]);
 
+    // Separate layer for the selected-point marker.
     const selectionLayer = new GraphicsLayer({
       title: "Selected LiDAR Point",
       elevationInfo: {
@@ -182,38 +192,42 @@
 
     view.map.add(selectionLayer);
 
-    // Draw a marker at the selected point.
     function highlightPoint(point) {
       selectionLayer.removeAll();
 
-      const marker = new Graphic({
-        geometry: point.clone(),
+      // Raise the marker slightly to reduce depth conflicts.
+      const markerPoint = point.clone();
+      markerPoint.z = point.z + 0.15;
+
+      selectionLayer.add(new Graphic({
+        geometry: markerPoint,
         symbol: {
           type: "simple-marker",
           style: "circle",
           color: [0, 255, 255, 1],
-          size: 15,
+          size: 17,
           outline: {
             color: [255, 255, 255, 1],
             width: 2
           }
         }
-      });
-
-      selectionLayer.add(marker);
+      }));
     }
 
-    // Calculate height when the user clicks the scene.
+    // Click a LiDAR point to select and measure it.
     scene.addEventListener(
       "arcgisViewImmediateClick",
       async (event) => {
+        const thisSelection = ++selectionVersion;
+
         heightText.textContent = "Calculating...";
         details.textContent = "";
 
         try {
           const hit = await scene.hitTest(event.detail);
 
-          // Find a hit belonging to a 3D point-cloud layer.
+          if (thisSelection !== selectionVersion) return;
+
           const pointHit = hit.results.find((result) => {
             const layer =
               result.graphic?.layer ?? result.layer;
@@ -234,37 +248,39 @@
             return;
           }
 
-          const point = pointHit.mapPoint;
-          const pointZ = point.z;
+          const point = pointHit.mapPoint.clone();
 
-          // Highlight the selected LiDAR point.
+          selectedPoint = point.clone();
+          zoomButton.disabled = false;
+
           highlightPoint(point);
 
-          // Sample the ground at the SAME horizontal location.
           const groundResult = await view.map.ground
             .queryElevation(point);
+
+          if (thisSelection !== selectionVersion) return;
 
           const groundZ = groundResult?.geometry?.z;
 
           if (!Number.isFinite(groundZ)) {
             heightText.textContent = "No ground elevation";
             details.textContent =
-              "Check your DTM and its coverage.";
+              "Check the DTM and its coverage.";
             return;
           }
 
-          // Calculate height above ground.
-          const height = pointZ - groundZ;
+          const height = point.z - groundZ;
 
-          heightText.textContent =
-            `${height.toFixed(2)} m`;
+          heightText.textContent = `${height.toFixed(2)} m`;
 
           details.textContent =
-            `Point elevation: ${pointZ.toFixed(2)} m\n` +
+            `Point elevation: ${point.z.toFixed(2)} m\n` +
             `Ground elevation: ${groundZ.toFixed(2)} m`;
 
         } catch (error) {
           console.error("LiDAR calculation error:", error);
+
+          if (thisSelection !== selectionVersion) return;
 
           heightText.textContent = "Error";
           details.textContent =
@@ -273,7 +289,7 @@
       }
     );
 
-    // Move the camera to 1.9 m above the terrain at its current X/Y.
+    // Move the camera to 1.9 m above the ground at its current X/Y.
     eyeButton.addEventListener("click", async () => {
       eyeButton.disabled = true;
       eyeButton.textContent = "Setting eye level...";
@@ -288,7 +304,7 @@
         const groundZ = groundResult?.geometry?.z;
 
         if (!Number.isFinite(groundZ)) {
-          alert("Could not obtain ground elevation at the camera location.");
+          alert("Could not obtain ground elevation at this location.");
           return;
         }
 
@@ -309,13 +325,47 @@
       }
     });
 
-    // Remove the marker and reset the results.
+    // Zoom towards the currently selected LiDAR point.
+    zoomButton.addEventListener("click", async () => {
+      if (!selectedPoint) return;
+
+      zoomButton.disabled = true;
+      zoomButton.textContent = "Zooming...";
+
+      try {
+        const point = selectedPoint.clone();
+
+        await view.goTo({
+          target: point,
+          heading: view.camera.heading,
+          tilt: 65,
+          range: 20
+        }, {
+          animate: true,
+          duration: 1200
+        });
+
+      } catch (error) {
+        console.error("Zoom error:", error);
+      } finally {
+        zoomButton.disabled = !selectedPoint;
+        zoomButton.textContent = "Zoom to selected point";
+      }
+    });
+
+    // Clear the selected point and its marker.
     clearButton.addEventListener("click", () => {
+      selectionVersion++;
+      selectedPoint = null;
+
       selectionLayer.removeAll();
+
       heightText.textContent = "Ready";
       details.textContent = "Click a LiDAR point to begin.";
-    });
-  </script>
 
+      zoomButton.disabled = true;
+    });
+
+  </script>
 </body>
 </html>
