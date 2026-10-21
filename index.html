@@ -1,0 +1,126 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiDAR Height Above Ground</title>
+
+  <script type="module"
+    src="https://js.arcgis.com/5.1/">
+  </script>
+
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: Arial, sans-serif;
+    }
+
+    arcgis-scene {
+      display: block;
+      height: 100%;
+      width: 100%;
+    }
+
+    #result {
+      position: absolute;
+      left: 16px;
+      bottom: 20px;
+      z-index: 10;
+      background: white;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px #0003;
+      max-width: 320px;
+    }
+
+    #height {
+      font-size: 28px;
+      font-weight: bold;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <arcgis-scene
+    id="scene"
+    item-id="c71ad5b695274ab2b74b06e705f3ea57">
+  </arcgis-scene>
+
+  <div id="result">
+    <div>Height above ground</div>
+    <div id="height">Click a LiDAR point</div>
+    <div id="details"></div>
+  </div>
+
+  <script type="module">
+    const scene = document.querySelector("#scene");
+    const heightText = document.querySelector("#height");
+    const details = document.querySelector("#details");
+
+    await scene.viewOnReady();
+
+    scene.addEventListener(
+      "arcgisViewImmediateClick",
+      async (event) => {
+        heightText.textContent = "Calculating...";
+        details.textContent = "";
+
+        try {
+          const hit = await scene.hitTest(event.detail);
+
+          // Find a hit belonging to a point cloud layer.
+          const pointHit = hit.results.find((r) =>
+            r.mapPoint?.z != null &&
+            (
+              r.graphic?.layer?.type === "point-cloud" ||
+              r.layer?.type === "point-cloud"
+            )
+          );
+
+          if (!pointHit) {
+            heightText.textContent = "No LiDAR point found";
+            details.textContent =
+              "Zoom in and click directly on a point.";
+            return;
+          }
+
+          const point = pointHit.mapPoint;
+          const pointZ = point.z;
+
+          // Sample the scene's configured ground at the
+          // SAME X/Y location as the selected LiDAR point.
+const groundResult = await scene.view.map.ground
+  .queryElevation(point);
+
+const groundZ = groundResult?.geometry?.z;
+
+          if (!Number.isFinite(groundZ)) {
+            heightText.textContent = "No ground elevation";
+            details.textContent =
+              "Check that the DTM covers this location.";
+            return;
+          }
+
+          const height = pointZ - groundZ;
+
+          heightText.textContent =
+            `${height.toFixed(2)} m`;
+
+          details.textContent =
+            `Point Z: ${pointZ.toFixed(2)} m | ` +
+            `Ground Z: ${groundZ.toFixed(2)} m`;
+
+        } catch (error) {
+          console.error(error);
+          heightText.textContent = "Calculation failed";
+          details.textContent =
+            "Check the scene, DTM service and browser console.";
+        }
+      }
+    );
+  </script>
+</body>
+</html>
