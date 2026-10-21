@@ -6,7 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LiDAR Height Inspector</title>
 
-  <link rel="stylesheet" href="https://js.arcgis.com/5.1/esri/themes/light/main.css" />
+  <link rel="stylesheet"
+    href="https://js.arcgis.com/5.1/esri/themes/light/main.css" />
   <script type="module" src="https://js.arcgis.com/5.1/"></script>
 
   <style>
@@ -35,17 +36,19 @@
       box-shadow: 0 3px 14px #0003;
     }
 
+    #controls-panel {
+      top: 16px;
+      right: 16px;
+      width: 225px;
+      max-height: calc(100vh - 52px);
+      overflow-y: auto;
+    }
+
     #result-panel {
       left: 16px;
       bottom: 20px;
       width: 270px;
       max-width: calc(100vw - 64px);
-    }
-
-    #controls-panel {
-      top: 16px;
-      right: 16px;
-      width: 220px;
     }
 
     .heading {
@@ -81,17 +84,11 @@
       cursor: pointer;
     }
 
-    button:hover {
-      background: #06636d;
-    }
-
-    button.secondary {
-      background: #505d6b;
-    }
-
-    button.secondary:hover {
-      background: #36414c;
-    }
+    button:hover { background: #06636d; }
+    button.secondary { background: #505d6b; }
+    button.secondary:hover { background: #36414c; }
+    button.active { background: #087443; }
+    button.active:hover { background: #065b34; }
 
     button:disabled {
       opacity: 0.5;
@@ -105,11 +102,27 @@
       margin-top: 10px;
     }
 
+    .section-label {
+      margin-top: 16px;
+      font-size: 12px;
+      font-weight: bold;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    #eye-status {
+      font-size: 12px;
+      margin-top: 8px;
+      color: #555;
+    }
+
     @media (max-width: 500px) {
       #controls-panel {
         top: 10px;
         right: 10px;
-        width: 185px;
+        width: 190px;
+        max-height: 60vh;
       }
 
       #result-panel {
@@ -117,6 +130,8 @@
         bottom: 10px;
         width: 210px;
       }
+
+      #height { font-size: 26px; }
     }
   </style>
 </head>
@@ -135,6 +150,22 @@
       Set eye level (1.8 m)
     </button>
 
+    <button id="eye-mode-button" class="secondary">
+      Enable continuous eye height
+    </button>
+
+    <div id="eye-status">Eye-height mode is off.</div>
+
+    <div class="hint">
+      In continuous mode, drag to look around and use W/A/S/D to move.
+    </div>
+
+    <div class="section-label">LiDAR</div>
+
+    <button id="renderer-button" class="secondary">
+      Switch LiDAR to Elevation
+    </button>
+
     <button id="zoom-button" class="secondary" disabled>
       Zoom to selected point
     </button>
@@ -143,26 +174,22 @@
       Clear selected point
     </button>
 
+    <div class="section-label">Scene layers</div>
+
+    <button id="buildings-button" class="secondary">
+      Hide building models
+    </button>
+
     <button id="basemap-button" class="secondary">
       Switch to grey basemap
     </button>
-
-    <div class="hint">
-      Click a LiDAR point to select and measure its
-      height above ground. Zoom in for more precise selection.
-    </div>
   </div>
 
   <div class="panel" id="result-panel">
     <div class="heading">LiDAR Height Inspector</div>
-
     <div>Height above ground</div>
-
     <div id="height">Ready</div>
-
-    <div id="details">
-      Click a LiDAR point to begin.
-    </div>
+    <div id="details">Click a LiDAR point to begin.</div>
   </div>
 
   <script type="module">
@@ -171,50 +198,112 @@
     const details = document.querySelector("#details");
 
     const eyeButton = document.querySelector("#eye-level-button");
+    const eyeModeButton = document.querySelector("#eye-mode-button");
+    const eyeStatus = document.querySelector("#eye-status");
     const zoomButton = document.querySelector("#zoom-button");
     const clearButton = document.querySelector("#clear-button");
     const basemapButton = document.querySelector("#basemap-button");
+    const buildingsButton = document.querySelector("#buildings-button");
+    const rendererButton = document.querySelector("#renderer-button");
+
+    const EYE_HEIGHT = 1.8;
+    const MOVE_SPEED = 3.0;
+    const MOUSE_SENSITIVITY = 0.18;
 
     let selectedPoint = null;
     let selectionVersion = 0;
-    let isGreyBasemap = false;
     let originalBasemap;
+    let isGreyBasemap = false;
+    let eyeMode = false;
+    let eyeUpdateRunning = false;
+    let lastMoveTime = 0;
+    let lastMouseX = null;
+    let lastMouseY = null;
+    let mouseLooking = false;
+    let currentRendererMode = "RGB";
+
+    const savedRenderers = new Map();
+    const savedBuildingVisibility = new Map();
+    const rendererCache = new Map();
+    const keysDown = new Set();
 
     await scene.viewOnReady();
 
     const view = scene.view;
-
-    const [GraphicsLayer, Graphic] = await $arcgis.import([
-      "@arcgis/core/layers/GraphicsLayer.js",
-      "@arcgis/core/Graphic.js"
-    ]);
-
-    // Preserve the scene's original basemap for restoring it later.
     originalBasemap = view.map.basemap;
 
-    // Dedicated layer for the selected LiDAR point marker.
+    const [
+      GraphicsLayer,
+      Graphic,
+      colorRendererCreator
+    ] = await $arcgis.import([
+      "@arcgis/core/layers/GraphicsLayer.js",
+      "@arcgis/core/Graphic.js",
+      "@arcgis/core/smartMapping/renderers/color.js"
+    ]);
+
     const selectionLayer = new GraphicsLayer({
       title: "Selected LiDAR Point",
-      elevationInfo: {
-        mode: "absolute-height"
-      },
+      elevationInfo: { mode: "absolute-height" },
       listMode: "hide"
     });
 
     view.map.add(selectionLayer);
 
-    // Find the point-cloud layers in the existing web scene.
-    function getPointCloudLayers() {
-      return view.map.allLayers
-        .toArray()
-        .filter(layer => layer.type === "point-cloud");
+    function allLayers() {
+      return view.map.allLayers.toArray();
     }
 
+    function pointCloudLayers() {
+      return allLayers().filter(layer =>
+        layer.type === "point-cloud"
+      );
+    }
+
+    function buildingLayers() {
+      return allLayers().filter(layer => {
+        if (layer === selectionLayer) return false;
+
+        const description = [
+          layer.title,
+          layer.portalItem?.title,
+          layer.type
+        ].filter(Boolean).join(" ").toLowerCase();
+
+        return (
+          /building|buildings|lod1|lod2|proposed model|3d model/.test(description) &&
+          layer.type !== "point-cloud"
+        );
+      });
+    }
+
+    const buildings = buildingLayers();
+
+    buildings.forEach(layer => {
+      savedBuildingVisibility.set(layer, layer.visible);
+    });
+
+    console.info(
+      "Building layers identified:",
+      buildings.map(layer => ({
+        title: layer.title,
+        type: layer.type,
+        visible: layer.visible
+      }))
+    );
+
+    pointCloudLayers().forEach(layer => {
+      savedRenderers.set(layer, layer.renderer);
+    });
+
+    // FIX 1:
+    // Place the marker at the exact selected point elevation.
+    // Do not add 0.15 m to its Z coordinate.
+    // Use a smaller marker to reduce the appearance of floating.
     function highlightPoint(point) {
       selectionLayer.removeAll();
 
       const markerPoint = point.clone();
-      markerPoint.z = point.z + 0.15;
 
       selectionLayer.add(new Graphic({
         geometry: markerPoint,
@@ -222,167 +311,376 @@
           type: "simple-marker",
           style: "circle",
           color: [0, 255, 255, 1],
-          size: 17,
+          size: 8,
           outline: {
             color: [255, 255, 255, 1],
-            width: 2
+            width: 1
           }
         }
       }));
     }
 
-    // Select a location on the LiDAR point cloud.
-    scene.addEventListener(
-      "arcgisViewImmediateClick",
-      async (event) => {
-        const thisSelection = ++selectionVersion;
+    // Select LiDAR points and calculate height above ground.
+    scene.addEventListener("arcgisViewImmediateClick", async event => {
+      if (eyeMode || mouseLooking) return;
 
-        heightText.textContent = "Calculating...";
-        details.textContent = "";
+      const version = ++selectionVersion;
+      heightText.textContent = "Calculating...";
+      details.textContent = "";
 
-        try {
-          const pointCloudLayers = getPointCloudLayers();
+      try {
+        const layers = pointCloudLayers();
 
-          if (pointCloudLayers.length === 0) {
-            heightText.textContent = "No point cloud";
-            details.textContent =
-              "No PointCloudLayer was found in this scene. " +
-              "Check the layer type and visibility.";
-            return;
-          }
-
-          // Restrict the native ArcGIS hit test to LiDAR layers.
-          // This avoids selecting the ground or unrelated layers.
-          const hit = await scene.hitTest(
-            event.detail,
-            { include: pointCloudLayers }
-          );
-
-          if (thisSelection !== selectionVersion) return;
-
-          const pointHit = hit.results.find(result => {
-            const layer = result.graphic?.layer ?? result.layer;
-
-            return (
-              result.mapPoint?.z != null &&
-              layer?.type === "point-cloud"
-            );
-          });
-
-          if (!pointHit) {
-            heightText.textContent = "No point found";
-            details.textContent =
-              "Zoom in and click directly on a visible LiDAR point.";
-            return;
-          }
-
-          const point = pointHit.mapPoint.clone();
-
-          selectedPoint = point.clone();
-          zoomButton.disabled = false;
-
-          highlightPoint(point);
-
-          // Query the ground elevation directly below the point.
-          const groundResult = await view.map.ground
-            .queryElevation(point);
-
-          if (thisSelection !== selectionVersion) return;
-
-          const groundZ = groundResult?.geometry?.z;
-
-          if (!Number.isFinite(groundZ)) {
-            heightText.textContent = "No ground elevation";
-            details.textContent =
-              "Check the DTM and its coverage.";
-            return;
-          }
-
-          const height = point.z - groundZ;
-
-          heightText.textContent = `${height.toFixed(2)} m`;
-
+        if (!layers.length) {
+          heightText.textContent = "No point cloud";
           details.textContent =
-            `Point elevation: ${point.z.toFixed(2)} m\n` +
-            `Ground elevation: ${groundZ.toFixed(2)} m`;
-
-        } catch (error) {
-          console.error("LiDAR calculation error:", error);
-
-          if (thisSelection !== selectionVersion) return;
-
-          heightText.textContent = "Error";
-          details.textContent =
-            "Could not calculate height. Check the browser console.";
+            "No PointCloudLayer was found in the scene.";
+          return;
         }
-      }
-    );
 
-    // Set camera height to 1.8 m above ground at the current X/Y.
+        const hit = await scene.hitTest(
+          event.detail,
+          { include: layers }
+        );
+
+        if (version !== selectionVersion) return;
+
+        const pointHit = hit.results.find(result => {
+          const layer = result.graphic?.layer ?? result.layer;
+
+          return (
+            result.mapPoint?.z != null &&
+            layer?.type === "point-cloud"
+          );
+        });
+
+        if (!pointHit) {
+          heightText.textContent = "No point found";
+          details.textContent =
+            "Zoom in and click directly on a visible LiDAR point.";
+          return;
+        }
+
+        const point = pointHit.mapPoint.clone();
+
+        selectedPoint = point.clone();
+        zoomButton.disabled = false;
+
+        highlightPoint(point);
+
+        const groundResult =
+          await view.map.ground.queryElevation(point);
+
+        if (version !== selectionVersion) return;
+
+        const groundZ = groundResult?.geometry?.z;
+
+        if (!Number.isFinite(groundZ)) {
+          heightText.textContent = "No ground elevation";
+          details.textContent =
+            "Check DTM coverage and elevation data.";
+          return;
+        }
+
+        const height = point.z - groundZ;
+
+        heightText.textContent = `${height.toFixed(2)} m`;
+
+        details.textContent =
+          `Point elevation: ${point.z.toFixed(2)} m\n` +
+          `Ground elevation: ${groundZ.toFixed(2)} m`;
+
+      } catch (error) {
+        console.error("LiDAR selection error:", error);
+
+        if (version !== selectionVersion) return;
+
+        heightText.textContent = "Error";
+        details.textContent =
+          "Could not calculate height. Check the browser console.";
+      }
+    });
+
+    // FIX 2:
+    // Set camera height to 1.8 m above terrain and tilt to 90 degrees,
+    // giving a horizontal, forward-facing view.
+    // The current heading is preserved.
+    async function setEyeHeight(animate = true) {
+      const camera = view.camera.clone();
+      const position = camera.position.clone();
+
+      const groundResult =
+        await view.map.ground.queryElevation(position);
+
+      const groundZ = groundResult?.geometry?.z;
+
+      if (!Number.isFinite(groundZ)) {
+        throw new Error("No ground elevation at camera location.");
+      }
+
+      position.z = groundZ + EYE_HEIGHT;
+
+      camera.position = position;
+      camera.tilt = 90;
+
+      if (animate) {
+        await view.goTo(camera, {
+          animate: true,
+          duration: 700
+        });
+      } else {
+        view.camera = camera;
+      }
+    }
+
     eyeButton.addEventListener("click", async () => {
       eyeButton.disabled = true;
-      eyeButton.textContent = "Setting eye level...";
+
+      try {
+        await setEyeHeight(true);
+      } catch (error) {
+        console.error(error);
+        alert("Could not set eye height. Check terrain coverage.");
+      } finally {
+        eyeButton.disabled = false;
+      }
+    });
+
+    async function updateGroundHeight() {
+      if (!eyeMode || eyeUpdateRunning) return;
+
+      eyeUpdateRunning = true;
 
       try {
         const camera = view.camera.clone();
         const position = camera.position.clone();
 
-        const groundResult = await view.map.ground
-          .queryElevation(position);
+        const groundResult =
+          await view.map.ground.queryElevation(position);
+
+        if (!eyeMode) return;
 
         const groundZ = groundResult?.geometry?.z;
 
-        if (!Number.isFinite(groundZ)) {
-          alert("Could not obtain ground elevation at this location.");
-          return;
+        if (!Number.isFinite(groundZ)) return;
+
+        const targetZ = groundZ + EYE_HEIGHT;
+
+        if (Math.abs(position.z - targetZ) > 0.03) {
+          position.z = targetZ;
+          camera.position = position;
+          view.camera = camera;
         }
-
-        position.z = groundZ + 1.8;
-        camera.position = position;
-
-        await view.goTo(camera, {
-          animate: true,
-          duration: 1000
-        });
-
       } catch (error) {
-        console.error("Camera height error:", error);
-        alert("Unable to set camera height.");
+        console.warn("Eye-height update failed:", error);
       } finally {
-        eyeButton.disabled = false;
-        eyeButton.textContent = "Set eye level (1.8 m)";
+        eyeUpdateRunning = false;
+      }
+    }
+
+    // Look around by rotating the camera in place.
+    scene.addEventListener("arcgisViewDrag", event => {
+      if (eyeMode) event.detail.stopPropagation();
+    });
+
+    scene.addEventListener("arcgisViewPointerDown", event => {
+      if (!eyeMode) return;
+
+      const native = event.detail.native;
+
+      if (native?.button !== 0) return;
+
+      mouseLooking = true;
+      lastMouseX = native.clientX;
+      lastMouseY = native.clientY;
+
+      event.detail.stopPropagation();
+    });
+
+    scene.addEventListener("arcgisViewPointerMove", event => {
+      if (!eyeMode || !mouseLooking) return;
+
+      const native = event.detail.native;
+      if (!native) return;
+
+      const dx = native.clientX - lastMouseX;
+      const dy = native.clientY - lastMouseY;
+
+      lastMouseX = native.clientX;
+      lastMouseY = native.clientY;
+
+      const camera = view.camera.clone();
+
+      camera.heading -= dx * MOUSE_SENSITIVITY;
+      camera.tilt = Math.max(
+        5,
+        Math.min(175, camera.tilt + dy * MOUSE_SENSITIVITY)
+      );
+
+      view.camera = camera;
+      event.detail.stopPropagation();
+    });
+
+    function stopMouseLook() {
+      mouseLooking = false;
+      lastMouseX = null;
+      lastMouseY = null;
+    }
+
+    scene.addEventListener("arcgisViewPointerUp", stopMouseLook);
+    scene.addEventListener("arcgisViewPointerLeave", stopMouseLook);
+
+    scene.addEventListener("arcgisViewKeyDown", event => {
+      if (!eyeMode) return;
+
+      const key = event.detail.key?.toLowerCase();
+
+      if (["w", "a", "s", "d"].includes(key)) {
+        keysDown.add(key);
+        event.detail.stopPropagation();
       }
     });
 
-    // Zoom towards the selected LiDAR point.
+    scene.addEventListener("arcgisViewKeyUp", event => {
+      const key = event.detail.key?.toLowerCase();
+      if (key) keysDown.delete(key);
+    });
+
+    window.addEventListener("keydown", event => {
+      if (
+        eyeMode &&
+        ["w", "a", "s", "d"].includes(event.key.toLowerCase()) &&
+        !["INPUT", "TEXTAREA"].includes(
+          document.activeElement?.tagName
+        )
+      ) {
+        event.preventDefault();
+        keysDown.add(event.key.toLowerCase());
+      }
+    });
+
+    window.addEventListener("keyup", event => {
+      keysDown.delete(event.key.toLowerCase());
+    });
+
+    window.addEventListener("blur", () => {
+      keysDown.clear();
+      stopMouseLook();
+    });
+
+    function movementFrame(timestamp) {
+      if (!eyeMode) return;
+
+      const delta = lastMoveTime
+        ? Math.min((timestamp - lastMoveTime) / 1000, 0.05)
+        : 0;
+
+      lastMoveTime = timestamp;
+
+      if (keysDown.size && delta > 0) {
+        const camera = view.camera.clone();
+        const position = camera.position.clone();
+
+        const distance = MOVE_SPEED * delta;
+        const heading = camera.heading * Math.PI / 180;
+
+        let forward = 0;
+        let sideways = 0;
+
+        if (keysDown.has("w")) forward++;
+        if (keysDown.has("s")) forward--;
+        if (keysDown.has("d")) sideways++;
+        if (keysDown.has("a")) sideways--;
+
+        const magnitude = Math.hypot(forward, sideways) || 1;
+
+        forward /= magnitude;
+        sideways /= magnitude;
+
+        position.x += distance * (
+          forward * Math.sin(heading) +
+          sideways * Math.cos(heading)
+        );
+
+        position.y += distance * (
+          forward * Math.cos(heading) -
+          sideways * Math.sin(heading)
+        );
+
+        camera.position = position;
+        view.camera = camera;
+
+        updateGroundHeight();
+      }
+
+      requestAnimationFrame(movementFrame);
+    }
+
+    eyeModeButton.addEventListener("click", async () => {
+      eyeModeButton.disabled = true;
+
+      try {
+        if (!eyeMode) {
+          await setEyeHeight(true);
+
+          eyeMode = true;
+
+          eyeModeButton.textContent =
+            "Disable continuous eye height";
+
+          eyeModeButton.classList.add("active");
+
+          eyeStatus.textContent =
+            "Active: drag to look around; use W/A/S/D to move.";
+
+          lastMoveTime = 0;
+          requestAnimationFrame(movementFrame);
+
+        } else {
+          eyeMode = false;
+
+          keysDown.clear();
+          stopMouseLook();
+
+          eyeModeButton.textContent =
+            "Enable continuous eye height";
+
+          eyeModeButton.classList.remove("active");
+          eyeStatus.textContent = "Eye-height mode is off.";
+        }
+      } catch (error) {
+        console.error(error);
+        alert("Unable to enable eye-height mode.");
+      } finally {
+        eyeModeButton.disabled = false;
+      }
+    });
+
     zoomButton.addEventListener("click", async () => {
       if (!selectedPoint) return;
 
       zoomButton.disabled = true;
-      zoomButton.textContent = "Zooming...";
 
       try {
-        const point = selectedPoint.clone();
-
         await view.goTo({
-          target: point,
+          target: selectedPoint.clone(),
           heading: view.camera.heading,
           tilt: 65,
           range: 20
         }, {
           animate: true,
-          duration: 1200
+          duration: 1000
         });
+
+        if (eyeMode) await updateGroundHeight();
 
       } catch (error) {
         console.error("Zoom error:", error);
       } finally {
         zoomButton.disabled = !selectedPoint;
-        zoomButton.textContent = "Zoom to selected point";
       }
     });
 
-    // Clear the selected point and its marker.
     clearButton.addEventListener("click", () => {
       selectionVersion++;
       selectedPoint = null;
@@ -395,7 +693,21 @@
       zoomButton.disabled = true;
     });
 
-    // Toggle between the original basemap and a 3D grey basemap.
+    buildingsButton.addEventListener("click", () => {
+      const currentlyVisible = buildings.some(layer => layer.visible);
+      const newVisibility = !currentlyVisible;
+
+      buildings.forEach(layer => {
+        layer.visible = newVisibility;
+      });
+
+      buildingsButton.textContent = newVisibility
+        ? "Hide building models"
+        : "Show building models";
+
+      buildingsButton.classList.toggle("active", !newVisibility);
+    });
+
     basemapButton.addEventListener("click", async () => {
       basemapButton.disabled = true;
 
@@ -403,20 +715,99 @@
         if (!isGreyBasemap) {
           view.map.basemap = "gray-3d";
           isGreyBasemap = true;
-          basemapButton.textContent = "Switch to aerial basemap";
         } else {
           view.map.basemap = originalBasemap;
           isGreyBasemap = false;
-          basemapButton.textContent = "Switch to grey basemap";
         }
 
         await view.map.basemap.load();
 
+        basemapButton.textContent = isGreyBasemap
+          ? "Switch to aerial basemap"
+          : "Switch to grey basemap";
+
       } catch (error) {
         console.error("Basemap switch error:", error);
-        alert("Unable to switch basemap. Check the browser console.");
+        alert("Unable to switch basemap.");
       } finally {
         basemapButton.disabled = false;
+      }
+    });
+
+    async function getRenderer(layer, mode) {
+      const key = `${layer.uid}-${mode}`;
+
+      if (rendererCache.has(key)) {
+        return rendererCache.get(key);
+      }
+
+      let result;
+
+      if (mode === "RGB") {
+        result = await colorRendererCreator
+          .createPCTrueColorRenderer({ layer });
+      } else {
+        result = await colorRendererCreator
+          .createPCContinuousRenderer({
+            layer,
+            field: "ELEVATION"
+          });
+      }
+
+      rendererCache.set(key, result.renderer);
+      return result.renderer;
+    }
+
+    rendererButton.addEventListener("click", async () => {
+      const layers = pointCloudLayers();
+
+      if (!layers.length) {
+        alert("No point-cloud layers were found.");
+        return;
+      }
+
+      rendererButton.disabled = true;
+
+      try {
+        const nextMode =
+          currentRendererMode === "RGB" ? "ELEVATION" : "RGB";
+
+        const generated = [];
+
+        for (const layer of layers) {
+          if (nextMode === "RGB" && savedRenderers.get(layer)) {
+            generated.push({
+              layer,
+              renderer: savedRenderers.get(layer)
+            });
+          } else {
+            generated.push({
+              layer,
+              renderer: await getRenderer(layer, nextMode)
+            });
+          }
+        }
+
+        generated.forEach(item => {
+          item.layer.renderer = item.renderer;
+        });
+
+        currentRendererMode = nextMode;
+
+        rendererButton.textContent =
+          nextMode === "RGB"
+            ? "Switch LiDAR to Elevation"
+            : "Switch LiDAR to RGB";
+
+      } catch (error) {
+        console.error("LiDAR renderer error:", error);
+
+        alert(
+          "Could not change the LiDAR display. " +
+          "Check the point-cloud attributes and renderer configuration."
+        );
+      } finally {
+        rendererButton.disabled = false;
       }
     });
 
