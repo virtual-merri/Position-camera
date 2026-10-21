@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LiDAR Height Inspector</title>
 
+  <link rel="stylesheet" href="https://js.arcgis.com/5.1/esri/themes/light/main.css" />
   <script type="module" src="https://js.arcgis.com/5.1/"></script>
 
   <style>
@@ -131,7 +132,7 @@
     <div class="heading">3D Tools</div>
 
     <button id="eye-level-button">
-      Set eye level (1.9 m)
+      Set eye level (1.8 m)
     </button>
 
     <button id="zoom-button" class="secondary" disabled>
@@ -142,9 +143,13 @@
       Clear selected point
     </button>
 
+    <button id="basemap-button" class="secondary">
+      Switch to grey basemap
+    </button>
+
     <div class="hint">
-      Click a LiDAR point to highlight it and calculate its
-      height above ground.
+      Click a LiDAR point to select and measure its
+      height above ground. Zoom in for more precise selection.
     </div>
   </div>
 
@@ -168,9 +173,12 @@
     const eyeButton = document.querySelector("#eye-level-button");
     const zoomButton = document.querySelector("#zoom-button");
     const clearButton = document.querySelector("#clear-button");
+    const basemapButton = document.querySelector("#basemap-button");
 
     let selectedPoint = null;
     let selectionVersion = 0;
+    let isGreyBasemap = false;
+    let originalBasemap;
 
     await scene.viewOnReady();
 
@@ -181,7 +189,10 @@
       "@arcgis/core/Graphic.js"
     ]);
 
-    // Separate layer for the selected-point marker.
+    // Preserve the scene's original basemap for restoring it later.
+    originalBasemap = view.map.basemap;
+
+    // Dedicated layer for the selected LiDAR point marker.
     const selectionLayer = new GraphicsLayer({
       title: "Selected LiDAR Point",
       elevationInfo: {
@@ -192,10 +203,16 @@
 
     view.map.add(selectionLayer);
 
+    // Find the point-cloud layers in the existing web scene.
+    function getPointCloudLayers() {
+      return view.map.allLayers
+        .toArray()
+        .filter(layer => layer.type === "point-cloud");
+    }
+
     function highlightPoint(point) {
       selectionLayer.removeAll();
 
-      // Raise the marker slightly to reduce depth conflicts.
       const markerPoint = point.clone();
       markerPoint.z = point.z + 0.15;
 
@@ -214,7 +231,7 @@
       }));
     }
 
-    // Click a LiDAR point to select and measure it.
+    // Select a location on the LiDAR point cloud.
     scene.addEventListener(
       "arcgisViewImmediateClick",
       async (event) => {
@@ -224,27 +241,38 @@
         details.textContent = "";
 
         try {
-          const hit = await scene.hitTest(event.detail);
+          const pointCloudLayers = getPointCloudLayers();
+
+          if (pointCloudLayers.length === 0) {
+            heightText.textContent = "No point cloud";
+            details.textContent =
+              "No PointCloudLayer was found in this scene. " +
+              "Check the layer type and visibility.";
+            return;
+          }
+
+          // Restrict the native ArcGIS hit test to LiDAR layers.
+          // This avoids selecting the ground or unrelated layers.
+          const hit = await scene.hitTest(
+            event.detail,
+            { include: pointCloudLayers }
+          );
 
           if (thisSelection !== selectionVersion) return;
 
-          const pointHit = hit.results.find((result) => {
-            const layer =
-              result.graphic?.layer ?? result.layer;
+          const pointHit = hit.results.find(result => {
+            const layer = result.graphic?.layer ?? result.layer;
 
             return (
               result.mapPoint?.z != null &&
-              (
-                layer?.type === "point-cloud" ||
-                layer?.type === "pointcloud"
-              )
+              layer?.type === "point-cloud"
             );
           });
 
           if (!pointHit) {
             heightText.textContent = "No point found";
             details.textContent =
-              "Zoom in and click directly on a LiDAR point.";
+              "Zoom in and click directly on a visible LiDAR point.";
             return;
           }
 
@@ -255,6 +283,7 @@
 
           highlightPoint(point);
 
+          // Query the ground elevation directly below the point.
           const groundResult = await view.map.ground
             .queryElevation(point);
 
@@ -289,7 +318,7 @@
       }
     );
 
-    // Move the camera to 1.9 m above the ground at its current X/Y.
+    // Set camera height to 1.8 m above ground at the current X/Y.
     eyeButton.addEventListener("click", async () => {
       eyeButton.disabled = true;
       eyeButton.textContent = "Setting eye level...";
@@ -308,7 +337,7 @@
           return;
         }
 
-        position.z = groundZ + 1.9;
+        position.z = groundZ + 1.8;
         camera.position = position;
 
         await view.goTo(camera, {
@@ -321,11 +350,11 @@
         alert("Unable to set camera height.");
       } finally {
         eyeButton.disabled = false;
-        eyeButton.textContent = "Set eye level (1.9 m)";
+        eyeButton.textContent = "Set eye level (1.8 m)";
       }
     });
 
-    // Zoom towards the currently selected LiDAR point.
+    // Zoom towards the selected LiDAR point.
     zoomButton.addEventListener("click", async () => {
       if (!selectedPoint) return;
 
@@ -364,6 +393,31 @@
       details.textContent = "Click a LiDAR point to begin.";
 
       zoomButton.disabled = true;
+    });
+
+    // Toggle between the original basemap and a 3D grey basemap.
+    basemapButton.addEventListener("click", async () => {
+      basemapButton.disabled = true;
+
+      try {
+        if (!isGreyBasemap) {
+          view.map.basemap = "gray-3d";
+          isGreyBasemap = true;
+          basemapButton.textContent = "Switch to aerial basemap";
+        } else {
+          view.map.basemap = originalBasemap;
+          isGreyBasemap = false;
+          basemapButton.textContent = "Switch to grey basemap";
+        }
+
+        await view.map.basemap.load();
+
+      } catch (error) {
+        console.error("Basemap switch error:", error);
+        alert("Unable to switch basemap. Check the browser console.");
+      } finally {
+        basemapButton.disabled = false;
+      }
     });
 
   </script>
