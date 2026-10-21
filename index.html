@@ -234,7 +234,7 @@
     </button>
 
     <button id="clear-button" class="secondary">
-      Clear selected point
+      Clear selection
     </button>
 
     <div class="section-label">Layers</div>
@@ -253,7 +253,7 @@
     <div class="heading">LiDAR Height Inspector</div>
     <div>Height above ground</div>
     <div id="height">Ready</div>
-    <div id="details">Click a LiDAR point to begin.</div>
+    <div id="details">Click a LiDAR point or property boundary to begin.</div>
     <div id="coordinate-section">
       <div class="heading">Cursor coordinates</div>
       <div id="coordinates">Move cursor over the scene</div>
@@ -357,7 +357,27 @@
       listMode: "hide"
     });
 
-    view.map.add(selectionLayer);
+    const propertySelectionLayer = new GraphicsLayer({
+      title: "Selected Property (50 m box)",
+      elevationInfo: { mode: "on-the-ground" },
+      listMode: "hide"
+    });
+
+    // When a parcel is selected, queried points from the currently loaded
+    // point-cloud tiles are drawn here while the original point-cloud layers
+    // are hidden. PointCloudLayer supports spatial queries, but not arbitrary
+    // polygon display filters; this provides a client-side parcel view.
+    const filteredPointsLayer = new GraphicsLayer({
+      title: "LiDAR points in selected property",
+      elevationInfo: { mode: "absolute-height" },
+      listMode: "hide"
+    });
+
+    view.map.addMany([selectionLayer, propertySelectionLayer, filteredPointsLayer]);
+    let selectedPropertyGeometry = null;
+    let selectedPropertyAttributes = null;
+    const pointCloudVisibilityBeforeParcel = new Map();
+    const MAX_RENDERED_PROPERTY_POINTS = 12000;
 
     function allLayers() {
       return view.map.allLayers.toArray();
@@ -371,7 +391,7 @@
 
     function boundaryLayers() {
       return allLayers().filter(layer => {
-        if (layer === selectionLayer || layer.type === "point-cloud") return false;
+        if ([selectionLayer, propertySelectionLayer, filteredPointsLayer].includes(layer) || layer.type === "point-cloud") return false;
         const description = [layer.title, layer.portalItem?.title, layer.type]
           .filter(Boolean).join(" ").toLowerCase();
         return /property|parcel|cadastral|lot boundary|property boundary/.test(description);
@@ -380,7 +400,7 @@
 
     function buildingLayers() {
       return allLayers().filter(layer => {
-        if (layer === selectionLayer) return false;
+        if ([selectionLayer, propertySelectionLayer, filteredPointsLayer].includes(layer)) return false;
 
         const description = [
           layer.title,
@@ -416,12 +436,17 @@
         visible: true,
         outFields: ["*"],
         elevationInfo: { mode: "on-the-ground" },
+        // Every property parcel is extruded vertically by a fixed 50 metres.
         renderer: {
           type: "simple",
           symbol: {
-            type: "simple-fill",
-            color: [255, 0, 0, 0],
-            outline: { color: [255, 0, 0, 235], width: 1.4 }
+            type: "polygon-3d",
+            symbolLayers: [{
+              type: "extrude",
+              size: 50,
+              material: { color: [255, 0, 0, 0.08] },
+              edges: { type: "solid", color: [255, 0, 0, 0.95], size: 1.4 }
+            }]
           }
         },
         popupEnabled: false
@@ -582,6 +607,111 @@ WKID: ${srLabel}`;
       coordinatesText.textContent = "Move cursor over the scene";
     });
 
+    function getPropertyLabel(attributes = {}) {
+      const preferred = Object.entries(attributes).find(([key, value]) =>
+        /address|property.?id|parcel.?id|lot.?plan|spi|street.?address/i.test(key) &&
+        value !== null && value !== undefined && String(value).trim() !== ""
+      );
+      return preferred ? `${preferred[0]}: ${preferred[1]}` : "Vicmap property parcel";
+    }
+
+    function restoreOriginalPointCloud() {
+      pointCloudVisibilityBeforeParcel.forEach((visible, layer) => {
+        layer.visible = visible;
+      });
+      pointCloudVisibilityBeforeParcel.clear();
+      filteredPointsLayer.removeAll();
+    }
+
+    async function selectProperty(feature) {
+      selectedPropertyGeometry = feature.geometry?.clone?.() ?? feature.geometry;
+      selectedPropertyAttributes = feature.attributes ?? {};
+      selectedPoint = null;
+      selectionLayer.removeAll();
+      zoomButton.disabled = true;
+      propertySelectionLayer.removeAll();
+      filteredPointsLayer.removeAll();
+
+      propertySelectionLayer.add(new Graphic({
+        geometry: selectedPropertyGeometry,
+        symbol: {
+          type: "polygon-3d",
+          symbolLayers: [{
+            type: "extrude",
+            size: 50,
+            material: { color: [255, 0, 0, 0.12] },
+            edges: { type: "solid", color: [255, 40, 40, 1], size: 3 }
+          }]
+        },
+        attributes: selectedPropertyAttributes
+      }));
+
+      // Hide the full point clouds and query only points inside the selected
+      // parcel from each PointCloudLayerView's currently loaded point tiles.
+      const clouds = pointCloudLayers();
+      clouds.forEach(layer => {
+        if (!pointCloudVisibilityBeforeParcel.has(layer)) {
+          pointCloudVisibilityBeforeParcel.set(layer, layer.visible);
+        }
+        layer.visible = false;
+      });
+
+      heightText.textContent = "Filtering…";
+      details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
+Loading LiDAR points inside this property…`;
+
+      let totalAvailable = 0;
+      let renderedCount = 0;
+      try {
+        for (const layer of clouds) {
+          const layerView = await view.whenLayerView(layer);
+          const query = layerView.createQuery();
+          query.geometry = selectedPropertyGeometry;
+          query.spatialRelationship = "intersects";
+          query.returnGeometry = true;
+          query.outFields = ["*"];
+          const result = await layerView.queryFeatures(query);
+          const features = result?.features ?? [];
+          totalAvailable += features.length;
+
+          for (const pointFeature of features) {
+            if (renderedCount >= MAX_RENDERED_PROPERTY_POINTS) break;
+            if (!pointFeature.geometry || pointFeature.geometry.type !== "point") continue;
+            filteredPointsLayer.add(new Graphic({
+              geometry: pointFeature.geometry,
+              attributes: pointFeature.attributes,
+              symbol: {
+                type: "simple-marker",
+                style: "circle",
+                size: Math.max(2, Math.min(4, currentPointSize * 0.55)),
+                color: [255, 90, 30, 0.95],
+                outline: { color: [255, 255, 255, 0.55], width: 0.3 }
+              }
+            }));
+            renderedCount++;
+          }
+          if (renderedCount >= MAX_RENDERED_PROPERTY_POINTS) break;
+        }
+
+        heightText.textContent = renderedCount ? `${renderedCount.toLocaleString()} points` : "No loaded points";
+        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
+` +
+          `LiDAR points shown inside parcel: ${renderedCount.toLocaleString()}
+` +
+          (totalAvailable > renderedCount
+            ? `Showing a maximum of ${MAX_RENDERED_PROPERTY_POINTS.toLocaleString()} points for performance.
+`
+            : "") +
+          "Only points currently loaded in the scene are queried. Zoom in or wait for the point cloud to load, then select the parcel again for a more complete result.";
+      } catch (error) {
+        console.error("Property point filtering failed:", error);
+        heightText.textContent = "Filter unavailable";
+        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
+` +
+          "The parcel is selected, but the scene could not query its loaded LiDAR points. The full point cloud has been hidden; clear the selection to restore it.";
+      }
+    }
+
     // FIX 1:
     // Place the marker at the exact selected point elevation.
     // Do not add 0.15 m to its Z coordinate.
@@ -610,6 +740,24 @@ WKID: ${srLabel}`;
     scene.addEventListener("arcgisViewImmediateClick", async event => {
       if (eyeMode || mouseLooking) return;
 
+      // Parcel clicks take priority over LiDAR point selection.
+      if (vicmapPropertyLayer?.visible) {
+        try {
+          const propertyHit = await scene.hitTest(event.detail, { include: [vicmapPropertyLayer] });
+          const propertyResult = propertyHit.results.find(result =>
+            (result.graphic?.layer ?? result.layer) === vicmapPropertyLayer &&
+            result.graphic?.geometry?.type === "polygon"
+          );
+          if (propertyResult?.graphic) {
+            selectionVersion++;
+            await selectProperty(propertyResult.graphic);
+            return;
+          }
+        } catch (propertyHitError) {
+          console.warn("Property hit test failed:", propertyHitError);
+        }
+      }
+
       const version = ++selectionVersion;
       heightText.textContent = "Calculating...";
       details.textContent = "";
@@ -626,17 +774,15 @@ WKID: ${srLabel}`;
 
         const hit = await scene.hitTest(
           event.detail,
-          { include: layers }
+          { include: selectedPropertyGeometry ? [filteredPointsLayer] : layers }
         );
 
         if (version !== selectionVersion) return;
 
         const pointHit = hit.results.find(result => {
           const layer = result.graphic?.layer ?? result.layer;
-
-          return (
-            result.mapPoint?.z != null &&
-            layer?.type === "point-cloud"
+          return result.mapPoint?.z != null && (
+            layer?.type === "point-cloud" || layer === filteredPointsLayer
           );
         });
 
@@ -970,11 +1116,15 @@ WKID: ${srLabel}`;
     clearButton.addEventListener("click", () => {
       selectionVersion++;
       selectedPoint = null;
+      selectedPropertyGeometry = null;
+      selectedPropertyAttributes = null;
 
       selectionLayer.removeAll();
+      propertySelectionLayer.removeAll();
+      restoreOriginalPointCloud();
 
       heightText.textContent = "Ready";
-      details.textContent = "Click a LiDAR point to begin.";
+      details.textContent = "Click a LiDAR point or property boundary to begin.";
 
       zoomButton.disabled = true;
     });
