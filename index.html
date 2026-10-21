@@ -9,6 +9,7 @@
   <link rel="stylesheet"
     href="https://js.arcgis.com/5.1/esri/themes/light/main.css" />
   <script type="module" src="https://js.arcgis.com/5.1/"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <style>
     html, body {
@@ -104,7 +105,7 @@
 
     .section-label {
       margin-top: 16px;
-      font-size: 12px;
+      font-size: 17px;
       font-weight: bold;
       color: #555;
       text-transform: uppercase;
@@ -172,7 +173,7 @@
   </arcgis-scene>
 
   <div class="panel" id="controls-panel">
-    <div class="heading">3D Tools</div>
+    <div class="heading">Camera settings</div>
 
     <button id="eye-level-button">
       Set eye level (1.8 m)
@@ -197,9 +198,6 @@
         step="1"
         value="55"
       />
-      <div class="hint">
-        Narrower view = more zoomed-in perspective; wider view = more surroundings.
-      </div>
     </div>
 
     <div class="hint">
@@ -239,7 +237,7 @@
       Clear selected point
     </button>
 
-    <div class="section-label">Scene layers</div>
+    <div class="section-label">Layers</div>
 
     <button id="buildings-button" class="secondary">
       Hide building models
@@ -408,6 +406,40 @@
       /vicmap property/i.test([layer.title, layer.portalItem?.title].filter(Boolean).join(" "))
     ) || null;
 
+    // Add the public Vicmap Property layer automatically and show it by default.
+    if (!vicmapPropertyLayer) {
+      const [FeatureLayer] = await $arcgis.import([
+        "@arcgis/core/layers/FeatureLayer.js"
+      ]);
+      vicmapPropertyLayer = new FeatureLayer({
+        title: "Vicmap Property — Property Map Polygons",
+        url: "https://services-ap1.arcgis.com/P744lA0wf4LlBZ84/ArcGIS/rest/services/Vicmap_Property/FeatureServer/0",
+        visible: true,
+        outFields: ["*"],
+        elevationInfo: { mode: "on-the-ground" },
+        renderer: {
+          type: "simple",
+          symbol: {
+            type: "simple-fill",
+            color: [255, 0, 0, 0],
+            outline: { color: [255, 0, 0, 235], width: 1.4 }
+          }
+        },
+        popupEnabled: false
+      });
+      view.map.add(vicmapPropertyLayer);
+      try {
+        await vicmapPropertyLayer.load();
+        savedBoundaryVisibility.set(vicmapPropertyLayer, true);
+      } catch (error) {
+        console.error("Could not load Vicmap Property by default:", error);
+        boundariesButton.textContent = "Retry property boundaries";
+      }
+    }
+    boundariesButton.textContent = vicmapPropertyLayer?.visible
+      ? "Hide property boundaries"
+      : "Show property boundaries";
+
     buildings.forEach(layer => {
       savedBuildingVisibility.set(layer, layer.visible);
     });
@@ -462,22 +494,63 @@
       });
     });
 
-    // Export the current rendered scene view as a PNG image.
+    // Export the rendered 3D scene plus the on-screen tool, coordinates and height panels.
     screenshotButton.addEventListener("click", async () => {
       screenshotButton.disabled = true;
       const oldLabel = screenshotButton.textContent;
       screenshotButton.textContent = "Capturing…";
       try {
         const shot = await view.takeScreenshot({ format: "png" });
+        const sceneImage = new Image();
+        sceneImage.src = shot.dataUrl;
+        await new Promise((resolve, reject) => {
+          sceneImage.onload = resolve;
+          sceneImage.onerror = reject;
+        });
+
+        const output = document.createElement("canvas");
+        output.width = sceneImage.naturalWidth;
+        output.height = sceneImage.naturalHeight;
+        const ctx = output.getContext("2d");
+        ctx.drawImage(sceneImage, 0, 0, output.width, output.height);
+
+        if (typeof window.html2canvas !== "function") {
+          throw new Error("The screenshot overlay library did not load.");
+        }
+
+        const scaleX = output.width / view.container.getBoundingClientRect().width;
+        const scaleY = output.height / view.container.getBoundingClientRect().height;
+        for (const panel of [
+          document.querySelector("#controls-panel"),
+          document.querySelector("#coordinate-panel"),
+          document.querySelector("#result-panel")
+        ]) {
+          const panelCanvas = await window.html2canvas(panel, {
+            backgroundColor: null,
+            scale: Math.max(scaleX, scaleY),
+            useCORS: true,
+            logging: false
+          });
+          const rect = panel.getBoundingClientRect();
+          const sceneRect = view.container.getBoundingClientRect();
+          ctx.drawImage(
+            panelCanvas,
+            (rect.left - sceneRect.left) * scaleX,
+            (rect.top - sceneRect.top) * scaleY,
+            rect.width * scaleX,
+            rect.height * scaleY
+          );
+        }
+
         const link = document.createElement("a");
-        link.href = shot.dataUrl;
-        link.download = `lidar-scene-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+        link.href = output.toDataURL("image/png");
+        link.download = `lidar-inspector-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
         document.body.appendChild(link);
         link.click();
         link.remove();
       } catch (error) {
         console.error("Screenshot export failed:", error);
-        alert("Could not export the screenshot. Check the browser console.");
+        alert("Could not export the full screenshot. Check that the page is online and reload it, then try again.");
       } finally {
         screenshotButton.disabled = false;
         screenshotButton.textContent = oldLabel;
@@ -923,54 +996,15 @@ WKID: ${srLabel}`;
       buildingsButton.classList.toggle("active", !newVisibility);
     });
 
-    boundariesButton.addEventListener("click", async () => {
-      boundariesButton.disabled = true;
-      const oldLabel = boundariesButton.textContent;
-      try {
-        // Load Vicmap Property only when the user first asks to see boundaries.
-        if (!vicmapPropertyLayer) {
-          boundariesButton.textContent = "Loading Vicmap Property…";
-          const [FeatureLayer] = await $arcgis.import([
-            "@arcgis/core/layers/FeatureLayer.js"
-          ]);
-          vicmapPropertyLayer = new FeatureLayer({
-            title: "Vicmap Property — Property Map Polygons",
-            url: "https://services-ap1.arcgis.com/P744lA0wf4LlBZ84/ArcGIS/rest/services/Vicmap_Property/FeatureServer/0",
-            visible: true,
-            outFields: ["*"],
-            elevationInfo: { mode: "on-the-ground" },
-            renderer: {
-              type: "simple",
-              symbol: {
-                type: "simple-fill",
-                color: [255, 255, 255, 0],
-                outline: { color: [255, 210, 0, 230], width: 1.2 }
-              }
-            },
-            popupEnabled: false
-          });
-          view.map.add(vicmapPropertyLayer);
-          await vicmapPropertyLayer.load();
-          savedBoundaryVisibility.set(vicmapPropertyLayer, true);
-        } else {
-          const anyVisible = boundaries.some(layer => layer.visible) || vicmapPropertyLayer.visible;
-          const nextVisible = !anyVisible;
-          boundaries.forEach(layer => { layer.visible = nextVisible; });
-          vicmapPropertyLayer.visible = nextVisible;
-        }
-
-        const anyVisibleNow = boundaries.some(layer => layer.visible) || Boolean(vicmapPropertyLayer?.visible);
-        boundariesButton.textContent = anyVisibleNow
-          ? "Hide property boundaries"
-          : "Show property boundaries";
-        boundariesButton.classList.toggle("active", !anyVisibleNow);
-      } catch (error) {
-        console.error("Vicmap Property layer failed to load:", error);
-        alert("Could not load the public Vicmap Property layer. Check your internet connection and browser console.");
-        boundariesButton.textContent = oldLabel;
-      } finally {
-        boundariesButton.disabled = false;
-      }
+    boundariesButton.addEventListener("click", () => {
+      const anyVisible = boundaries.some(layer => layer.visible) || Boolean(vicmapPropertyLayer?.visible);
+      const nextVisible = !anyVisible;
+      boundaries.forEach(layer => { layer.visible = nextVisible; });
+      if (vicmapPropertyLayer) vicmapPropertyLayer.visible = nextVisible;
+      boundariesButton.textContent = nextVisible
+        ? "Hide property boundaries"
+        : "Show property boundaries";
+      boundariesButton.classList.toggle("active", !nextVisible);
     });
 
     basemapButton.addEventListener("click", async () => {
