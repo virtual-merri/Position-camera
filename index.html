@@ -484,16 +484,31 @@
       const version = ++propertyRefreshVersion;
       try {
         const query = vicmapPropertyLayer.createQuery();
-        query.geometry = view.extent;
+        query.geometry = view.extent?.clone ? view.extent.clone() : view.extent;
         query.spatialRelationship = "intersects";
-        query.returnGeometry = true;
-        query.outFields = ["*"];
-        query.num = 2000;
-        const result = await vicmapPropertyLayer.queryFeatures(query);
+        query.returnGeometry = false;
+        query.outFields = [];
+
+        // Do not rely on a single queryFeatures() call: feature services cap
+        // the number of geometries returned per request. First retrieve the
+        // matching object IDs, then fetch the actual parcel geometries in
+        // manageable batches so dense views are not silently truncated.
+        const objectIds = await vicmapPropertyLayer.queryObjectIds(query);
         if (version !== propertyRefreshVersion) return;
+        const features = [];
+        const batchSize = 500;
+        for (let offset = 0; offset < objectIds.length; offset += batchSize) {
+          const batchQuery = vicmapPropertyLayer.createQuery();
+          batchQuery.objectIds = objectIds.slice(offset, offset + batchSize);
+          batchQuery.returnGeometry = true;
+          batchQuery.outFields = ["*"];
+          const batchResult = await vicmapPropertyLayer.queryFeatures(batchQuery);
+          if (version !== propertyRefreshVersion) return;
+          features.push(...(batchResult.features || []));
+        }
 
         const unique = new Map();
-        for (const feature of (result.features || [])) {
+        for (const feature of features) {
           if (!feature.geometry || feature.geometry.type !== "polygon") continue;
           const key = geometrySignature(feature.geometry);
           if (key && !unique.has(key)) unique.set(key, feature);
