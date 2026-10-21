@@ -197,6 +197,22 @@
 
     <div class="section-label">LiDAR</div>
 
+    <div class="slider-control">
+      <label for="point-size-slider">
+        <span>LiDAR point size</span>
+        <strong id="point-size-value">5</strong>
+      </label>
+      <input
+        id="point-size-slider"
+        type="range"
+        min="1"
+        max="15"
+        step="0.5"
+        value="5"
+      />
+      <div class="hint">Adjusts the displayed size of LiDAR points.</div>
+    </div>
+
     <button id="renderer-button" class="secondary">
       Switch LiDAR to Elevation
     </button>
@@ -242,6 +258,8 @@
     const rendererButton = document.querySelector("#renderer-button");
     const fovSlider = document.querySelector("#fov-slider");
     const fovValue = document.querySelector("#fov-value");
+    const pointSizeSlider = document.querySelector("#point-size-slider");
+    const pointSizeValue = document.querySelector("#point-size-value");
 
     const EYE_HEIGHT = 1.8;
     const MOVE_SPEED = 3.0;
@@ -258,6 +276,7 @@
     let lastMouseY = null;
     let mouseLooking = false;
     let currentRendererMode = "RGB";
+    let currentPointSize = Number(pointSizeSlider.value);
 
     const savedRenderers = new Map();
     const savedBuildingVisibility = new Map();
@@ -324,6 +343,33 @@
         layer.type === "point-cloud"
       );
     }
+
+    // Apply a fixed screen-space point size while preserving the renderer's
+    // RGB/elevation styling. This keeps the slider usable in either mode.
+    function rendererWithPointSize(renderer, size) {
+      if (!renderer) return renderer;
+      const adjustedRenderer = renderer.clone();
+      adjustedRenderer.pointSizeAlgorithm = {
+        type: "fixed-size",
+        useRealWorldSymbolSizes: false,
+        size: Number(size)
+      };
+      return adjustedRenderer;
+    }
+
+    function applyPointSizeToAllLayers(size) {
+      currentPointSize = Number(size);
+      pointSizeValue.textContent = String(currentPointSize);
+      pointCloudLayers().forEach(layer => {
+        if (layer.renderer) {
+          layer.renderer = rendererWithPointSize(layer.renderer, currentPointSize);
+        }
+      });
+    }
+
+    pointSizeSlider.addEventListener("input", () => {
+      applyPointSizeToAllLayers(pointSizeSlider.value);
+    });
 
     function buildingLayers() {
       return allLayers().filter(layer => {
@@ -854,7 +900,10 @@
         }
 
         generated.forEach(item => {
-          item.layer.renderer = item.renderer;
+          item.layer.renderer = rendererWithPointSize(
+            item.renderer,
+            currentPointSize
+          );
         });
 
         currentRendererMode = nextMode;
