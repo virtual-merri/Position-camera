@@ -122,10 +122,10 @@
       margin-top: 14px;
     }
 
-    #coordinate-panel {
-      left: 16px;
-      top: 16px;
-      max-width: min(340px, calc(100vw - 360px));
+    #coordinate-section {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #ddd;
       font-size: 12px;
       line-height: 1.5;
       pointer-events: none;
@@ -249,16 +249,15 @@
     </button>
   </div>
 
-  <div class="panel" id="coordinate-panel">
-    <div class="heading">Cursor coordinates</div>
-    <div id="coordinates">Move cursor over the scene</div>
-  </div>
-
   <div class="panel" id="result-panel">
     <div class="heading">LiDAR Height Inspector</div>
     <div>Height above ground</div>
     <div id="height">Ready</div>
     <div id="details">Click a LiDAR point to begin.</div>
+    <div id="coordinate-section">
+      <div class="heading">Cursor coordinates</div>
+      <div id="coordinates">Move cursor over the scene</div>
+    </div>
   </div>
 
   <script type="module">
@@ -522,7 +521,6 @@
         const scaleY = output.height / view.container.getBoundingClientRect().height;
         for (const panel of [
           document.querySelector("#controls-panel"),
-          document.querySelector("#coordinate-panel"),
           document.querySelector("#result-panel")
         ]) {
           const panelCanvas = await window.html2canvas(panel, {
