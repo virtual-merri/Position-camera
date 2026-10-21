@@ -243,6 +243,7 @@
       Hide building models
     </button>
     <button id="boundaries-button" class="secondary">Hide property boundaries</button>
+    <button id="extrude-button" class="secondary">Extrude property boundaries: Off</button>
 
     <button id="basemap-button" class="secondary">
       Switch to grey basemap
@@ -253,7 +254,7 @@
     <div class="heading">LiDAR Height Inspector</div>
     <div>Height above ground</div>
     <div id="height">Ready</div>
-    <div id="details">Click a LiDAR point or property boundary to begin.</div>
+    <div id="details">Click a LiDAR point to begin.</div>
     <div id="coordinate-section">
       <div class="heading">Cursor coordinates</div>
       <div id="coordinates">Move cursor over the scene</div>
@@ -281,6 +282,7 @@
     const pointDensityValue = document.querySelector("#point-density-value");
     const screenshotButton = document.querySelector("#screenshot-button");
     const boundariesButton = document.querySelector("#boundaries-button");
+    const extrudeButton = document.querySelector("#extrude-button");
     const coordinatesText = document.querySelector("#coordinates");
 
     const EYE_HEIGHT = 1.8;
@@ -357,27 +359,20 @@
       listMode: "hide"
     });
 
-    const propertySelectionLayer = new GraphicsLayer({
-      title: "Selected Property (50 m box)",
+    // Property polygons are displayed as deduplicated graphics. No parcel
+    // selection or LiDAR filtering is performed, avoiding the slow point-cloud query.
+    const propertyDisplayLayer = new GraphicsLayer({
+      title: "Vicmap Property boundaries (deduplicated display)",
       elevationInfo: { mode: "on-the-ground" },
       listMode: "hide"
     });
 
-    // When a parcel is selected, queried points from the currently loaded
-    // point-cloud tiles are drawn here while the original point-cloud layers
-    // are hidden. PointCloudLayer supports spatial queries, but not arbitrary
-    // polygon display filters; this provides a client-side parcel view.
-    const filteredPointsLayer = new GraphicsLayer({
-      title: "LiDAR points in selected property",
-      elevationInfo: { mode: "absolute-height" },
-      listMode: "hide"
-    });
-
-    view.map.addMany([selectionLayer, propertySelectionLayer, filteredPointsLayer]);
-    let selectedPropertyGeometry = null;
-    let selectedPropertyAttributes = null;
-    const pointCloudVisibilityBeforeParcel = new Map();
-    const MAX_RENDERED_PROPERTY_POINTS = 12000;
+    view.map.addMany([selectionLayer, propertyDisplayLayer]);
+    let extrudeProperties = false;
+    let propertyRefreshVersion = 0;
+    let propertyRefreshRunning = false;
+    let propertyRefreshQueued = false;
+    let propertyBoundariesVisible = true;
 
     function allLayers() {
       return view.map.allLayers.toArray();
@@ -391,7 +386,7 @@
 
     function boundaryLayers() {
       return allLayers().filter(layer => {
-        if ([selectionLayer, propertySelectionLayer, filteredPointsLayer].includes(layer) || layer.type === "point-cloud") return false;
+        if ([selectionLayer, propertyDisplayLayer].includes(layer) || layer.type === "point-cloud") return false;
         const description = [layer.title, layer.portalItem?.title, layer.type]
           .filter(Boolean).join(" ").toLowerCase();
         return /property|parcel|cadastral|lot boundary|property boundary/.test(description);
@@ -400,7 +395,7 @@
 
     function buildingLayers() {
       return allLayers().filter(layer => {
-        if ([selectionLayer, propertySelectionLayer, filteredPointsLayer].includes(layer)) return false;
+        if ([selectionLayer, propertyDisplayLayer].includes(layer)) return false;
 
         const description = [
           layer.title,
@@ -433,22 +428,11 @@
       vicmapPropertyLayer = new FeatureLayer({
         title: "Vicmap Property — Property Map Polygons",
         url: "https://services-ap1.arcgis.com/P744lA0wf4LlBZ84/ArcGIS/rest/services/Vicmap_Property/FeatureServer/0",
-        visible: true,
+        // This service layer is a query source only. A deduplicated graphics
+        // layer is drawn instead so identical overlapping parcels appear once.
+        visible: false,
         outFields: ["*"],
         elevationInfo: { mode: "on-the-ground" },
-        // Every property parcel is extruded vertically by a fixed 50 metres.
-        renderer: {
-          type: "simple",
-          symbol: {
-            type: "polygon-3d",
-            symbolLayers: [{
-              type: "extrude",
-              size: 50,
-              material: { color: [255, 0, 0, 0.08] },
-              edges: { type: "solid", color: [255, 0, 0, 0.95], size: 1.4 }
-            }]
-          }
-        },
         popupEnabled: false
       });
       view.map.add(vicmapPropertyLayer);
@@ -460,9 +444,95 @@
         boundariesButton.textContent = "Retry property boundaries";
       }
     }
+    // The source service is queried only for the current view extent. Identical
+    // polygon geometries are collapsed into one display graphic to prevent dark
+    // red overlaps. This is separate from the LiDAR point cloud and stays fast.
+    function geometrySignature(geometry) {
+      const rings = geometry?.rings;
+      if (!Array.isArray(rings)) return "";
+      return rings.map(ring => ring.slice(0, -1)
+        .map(point => `${Math.round(point[0] * 1000) / 1000},${Math.round(point[1] * 1000) / 1000}`)
+        .sort().join(";"))
+        .sort().join("|");
+    }
+
+    function propertySymbol(extruded) {
+      if (extruded) {
+        return {
+          type: "polygon-3d",
+          symbolLayers: [{
+            type: "extrude", size: 50,
+            material: { color: [255, 0, 0, 0.035] },
+            edges: { type: "solid", color: [255, 0, 0, 0.9], size: 1.2 }
+          }]
+        };
+      }
+      return {
+        type: "simple-fill",
+        color: [255, 0, 0, 0],
+        outline: { color: [255, 0, 0, 0.9], width: 1.1 }
+      };
+    }
+
+    async function refreshPropertyDisplay() {
+      if (!vicmapPropertyLayer || !vicmapPropertyLayer.loaded || propertyRefreshRunning) {
+        propertyRefreshQueued = true;
+        return;
+      }
+      propertyRefreshRunning = true;
+      propertyRefreshQueued = false;
+      const version = ++propertyRefreshVersion;
+      try {
+        const query = vicmapPropertyLayer.createQuery();
+        query.geometry = view.extent;
+        query.spatialRelationship = "intersects";
+        query.returnGeometry = true;
+        query.outFields = ["*"];
+        query.num = 2000;
+        const result = await vicmapPropertyLayer.queryFeatures(query);
+        if (version !== propertyRefreshVersion) return;
+
+        const unique = new Map();
+        for (const feature of (result.features || [])) {
+          if (!feature.geometry || feature.geometry.type !== "polygon") continue;
+          const key = geometrySignature(feature.geometry);
+          if (key && !unique.has(key)) unique.set(key, feature);
+        }
+
+        propertyDisplayLayer.removeAll();
+        propertyDisplayLayer.addMany(Array.from(unique.values()).map(feature => new Graphic({
+          geometry: feature.geometry,
+          attributes: feature.attributes,
+          symbol: propertySymbol(extrudeProperties)
+        })));
+        propertyDisplayLayer.visible = propertyBoundariesVisible;
+      } catch (error) {
+        console.warn("Could not refresh deduplicated property display:", error);
+      } finally {
+        propertyRefreshRunning = false;
+        if (propertyRefreshQueued) refreshPropertyDisplay();
+      }
+    }
+
     boundariesButton.textContent = vicmapPropertyLayer?.visible
       ? "Hide property boundaries"
       : "Show property boundaries";
+    if (vicmapPropertyLayer) {
+      // The source layer is deliberately hidden; only the deduplicated graphics render.
+      vicmapPropertyLayer.visible = false;
+      propertyDisplayLayer.visible = true;
+      refreshPropertyDisplay();
+      view.watch("stationary", stationary => {
+        if (stationary) refreshPropertyDisplay();
+      });
+    }
+
+    extrudeButton.addEventListener("click", () => {
+      extrudeProperties = !extrudeProperties;
+      extrudeButton.textContent = `Extrude property boundaries: ${extrudeProperties ? "On (50 m)" : "Off"}`;
+      extrudeButton.classList.toggle("active", extrudeProperties);
+      propertyDisplayLayer.graphics.forEach(graphic => { graphic.symbol = propertySymbol(extrudeProperties); });
+    });
 
     buildings.forEach(layer => {
       savedBuildingVisibility.set(layer, layer.visible);
@@ -607,140 +677,6 @@ WKID: ${srLabel}`;
       coordinatesText.textContent = "Move cursor over the scene";
     });
 
-    function getPropertyLabel(attributes = {}) {
-      const preferred = Object.entries(attributes).find(([key, value]) =>
-        /address|property.?id|parcel.?id|lot.?plan|spi|street.?address/i.test(key) &&
-        value !== null && value !== undefined && String(value).trim() !== ""
-      );
-      return preferred ? `${preferred[0]}: ${preferred[1]}` : "Vicmap property parcel";
-    }
-
-    function restoreOriginalPointCloud() {
-      pointCloudVisibilityBeforeParcel.forEach((visible, layer) => {
-        layer.visible = visible;
-      });
-      pointCloudVisibilityBeforeParcel.clear();
-      filteredPointsLayer.removeAll();
-    }
-
-    async function selectProperty(feature) {
-      selectedPropertyGeometry = feature.geometry?.clone?.() ?? feature.geometry;
-      selectedPropertyAttributes = feature.attributes ?? {};
-      selectedPoint = null;
-      selectionLayer.removeAll();
-      zoomButton.disabled = true;
-      propertySelectionLayer.removeAll();
-      filteredPointsLayer.removeAll();
-
-      propertySelectionLayer.add(new Graphic({
-        geometry: selectedPropertyGeometry,
-        symbol: {
-          type: "polygon-3d",
-          symbolLayers: [{
-            type: "extrude",
-            size: 50,
-            material: { color: [255, 0, 0, 0.12] },
-            edges: { type: "solid", color: [255, 40, 40, 1], size: 3 }
-          }]
-        },
-        attributes: selectedPropertyAttributes
-      }));
-
-      // IMPORTANT: query the PointCloudLayerViews BEFORE hiding them. Hiding a
-      // point-cloud layer can unload its client-side tiles, leaving the query
-      // with zero points. Keep the original clouds visible unless a non-empty
-      // parcel result is successfully returned.
-      const clouds = pointCloudLayers();
-      heightText.textContent = "Filtering…";
-      details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
-        "Searching LiDAR points currently loaded in the scene…";
-
-      let totalAvailable = 0;
-      let renderedCount = 0;
-      try {
-        for (const layer of clouds) {
-          const layerView = await view.whenLayerView(layer);
-          // Let the layer view finish its current update so its loaded point
-          // tiles are available for querying. Do not hide it before this query.
-          if (layerView.updating) {
-            await new Promise(resolve => {
-              let handle;
-              handle = layerView.watch("updating", updating => {
-                if (!updating) {
-                  handle?.remove();
-                  resolve();
-                }
-              });
-              if (!layerView.updating) {
-                handle?.remove();
-                resolve();
-              }
-            });
-          }
-
-          const query = layerView.createQuery();
-          query.geometry = selectedPropertyGeometry;
-          query.spatialRelationship = "intersects";
-          query.returnGeometry = true;
-          query.outFields = ["*"];
-          const result = await layerView.queryFeatures(query);
-          const features = result?.features ?? [];
-          totalAvailable += features.length;
-
-          for (const pointFeature of features) {
-            if (renderedCount >= MAX_RENDERED_PROPERTY_POINTS) break;
-            if (!pointFeature.geometry || pointFeature.geometry.type !== "point") continue;
-            filteredPointsLayer.add(new Graphic({
-              geometry: pointFeature.geometry,
-              attributes: pointFeature.attributes,
-              symbol: {
-                type: "simple-marker",
-                style: "circle",
-                size: Math.max(2, Math.min(4, currentPointSize * 0.55)),
-                color: [255, 90, 30, 0.95],
-                outline: { color: [255, 255, 255, 0.55], width: 0.3 }
-              }
-            }));
-            renderedCount++;
-          }
-          if (renderedCount >= MAX_RENDERED_PROPERTY_POINTS) break;
-        }
-
-        if (renderedCount > 0) {
-          // Save visibility once and only hide the original clouds when the
-          // replacement graphics layer contains points to show.
-          clouds.forEach(layer => {
-            if (!pointCloudVisibilityBeforeParcel.has(layer)) {
-              pointCloudVisibilityBeforeParcel.set(layer, layer.visible);
-            }
-            layer.visible = false;
-          });
-          heightText.textContent = `${renderedCount.toLocaleString()} points`;
-          details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
-            `LiDAR points shown inside parcel: ${renderedCount.toLocaleString()}\n` +
-            (totalAvailable > renderedCount
-              ? `Showing a maximum of ${MAX_RENDERED_PROPERTY_POINTS.toLocaleString()} points for performance.\n`
-              : "") +
-            "These are the points returned from the currently loaded scene tiles. Clear selection to restore the original point cloud.";
-        } else {
-          // A zero-result query must never blank the scene. The box remains
-          // selected and the original LiDAR remains visible for inspection.
-          filteredPointsLayer.removeAll();
-          restoreOriginalPointCloud();
-          heightText.textContent = "No points returned";
-          details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
-            "No LiDAR points were returned for this parcel from the currently loaded scene tiles. The original LiDAR remains visible. Zoom closer to the parcel, wait for the point cloud to finish loading, then select it again. If this keeps happening, this point-cloud service may not support parcel polygon queries reliably; a server-side clip or preprocessed parcel subset would be needed for exact filtering.";
-        }
-      } catch (error) {
-        console.error("Property point filtering failed:", error);
-        filteredPointsLayer.removeAll();
-        restoreOriginalPointCloud();
-        heightText.textContent = "Filter unavailable";
-        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
-          "The parcel is selected, but the LiDAR service could not return points for the polygon query. The original point cloud has been kept visible. Clear selection to remove the parcel box.";
-      }
-    }
-
     // FIX 1:
     // Place the marker at the exact selected point elevation.
     // Do not add 0.15 m to its Z coordinate.
@@ -769,24 +705,6 @@ WKID: ${srLabel}`;
     scene.addEventListener("arcgisViewImmediateClick", async event => {
       if (eyeMode || mouseLooking) return;
 
-      // Parcel clicks take priority over LiDAR point selection.
-      if (vicmapPropertyLayer?.visible) {
-        try {
-          const propertyHit = await scene.hitTest(event.detail, { include: [vicmapPropertyLayer] });
-          const propertyResult = propertyHit.results.find(result =>
-            (result.graphic?.layer ?? result.layer) === vicmapPropertyLayer &&
-            result.graphic?.geometry?.type === "polygon"
-          );
-          if (propertyResult?.graphic) {
-            selectionVersion++;
-            await selectProperty(propertyResult.graphic);
-            return;
-          }
-        } catch (propertyHitError) {
-          console.warn("Property hit test failed:", propertyHitError);
-        }
-      }
-
       const version = ++selectionVersion;
       heightText.textContent = "Calculating...";
       details.textContent = "";
@@ -803,7 +721,7 @@ WKID: ${srLabel}`;
 
         const hit = await scene.hitTest(
           event.detail,
-          { include: selectedPropertyGeometry ? [filteredPointsLayer] : layers }
+          { include: layers }
         );
 
         if (version !== selectionVersion) return;
@@ -811,7 +729,7 @@ WKID: ${srLabel}`;
         const pointHit = hit.results.find(result => {
           const layer = result.graphic?.layer ?? result.layer;
           return result.mapPoint?.z != null && (
-            layer?.type === "point-cloud" || layer === filteredPointsLayer
+            layer?.type === "point-cloud"
           );
         });
 
@@ -1145,15 +1063,10 @@ WKID: ${srLabel}`;
     clearButton.addEventListener("click", () => {
       selectionVersion++;
       selectedPoint = null;
-      selectedPropertyGeometry = null;
-      selectedPropertyAttributes = null;
-
       selectionLayer.removeAll();
-      propertySelectionLayer.removeAll();
-      restoreOriginalPointCloud();
 
       heightText.textContent = "Ready";
-      details.textContent = "Click a LiDAR point or property boundary to begin.";
+      details.textContent = "Click a LiDAR point to begin.";
 
       zoomButton.disabled = true;
     });
@@ -1174,10 +1087,14 @@ WKID: ${srLabel}`;
     });
 
     boundariesButton.addEventListener("click", () => {
-      const anyVisible = boundaries.some(layer => layer.visible) || Boolean(vicmapPropertyLayer?.visible);
-      const nextVisible = !anyVisible;
+      const nextVisible = !propertyBoundariesVisible;
+      propertyBoundariesVisible = nextVisible;
       boundaries.forEach(layer => { layer.visible = nextVisible; });
-      if (vicmapPropertyLayer) vicmapPropertyLayer.visible = nextVisible;
+      if (vicmapPropertyLayer) {
+        // Keep the query source hidden and toggle only its deduplicated display.
+        vicmapPropertyLayer.visible = false;
+        propertyDisplayLayer.visible = nextVisible;
+      }
       boundariesButton.textContent = nextVisible
         ? "Hide property boundaries"
         : "Show property boundaries";
