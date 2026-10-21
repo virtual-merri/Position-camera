@@ -402,11 +402,11 @@
     const boundaries = boundaryLayers();
 
     boundaries.forEach(layer => savedBoundaryVisibility.set(layer, layer.visible));
-    if (!boundaries.length) {
-      boundariesButton.disabled = true;
-      boundariesButton.textContent = "No property boundary layer found";
-      boundariesButton.title = "Add a layer with a name containing property, parcel or cadastral.";
-    }
+    // If no property layer is already in the scene, the toggle can load the
+    // public Vicmap Property Map Polygons service on demand.
+    let vicmapPropertyLayer = boundaries.find(layer =>
+      /vicmap property/i.test([layer.title, layer.portalItem?.title].filter(Boolean).join(" "))
+    ) || null;
 
     buildings.forEach(layer => {
       savedBuildingVisibility.set(layer, layer.visible);
@@ -923,15 +923,54 @@ WKID: ${srLabel}`;
       buildingsButton.classList.toggle("active", !newVisibility);
     });
 
-    boundariesButton.addEventListener("click", () => {
-      if (!boundaries.length) return;
-      const anyVisible = boundaries.some(layer => layer.visible);
-      const nextVisible = !anyVisible;
-      boundaries.forEach(layer => { layer.visible = nextVisible; });
-      boundariesButton.textContent = nextVisible
-        ? "Hide property boundaries"
-        : "Show property boundaries";
-      boundariesButton.classList.toggle("active", !nextVisible);
+    boundariesButton.addEventListener("click", async () => {
+      boundariesButton.disabled = true;
+      const oldLabel = boundariesButton.textContent;
+      try {
+        // Load Vicmap Property only when the user first asks to see boundaries.
+        if (!vicmapPropertyLayer) {
+          boundariesButton.textContent = "Loading Vicmap Property…";
+          const [FeatureLayer] = await $arcgis.import([
+            "@arcgis/core/layers/FeatureLayer.js"
+          ]);
+          vicmapPropertyLayer = new FeatureLayer({
+            title: "Vicmap Property — Property Map Polygons",
+            url: "https://services-ap1.arcgis.com/P744lA0wf4LlBZ84/ArcGIS/rest/services/Vicmap_Property/FeatureServer/0",
+            visible: true,
+            outFields: ["*"],
+            elevationInfo: { mode: "on-the-ground" },
+            renderer: {
+              type: "simple",
+              symbol: {
+                type: "simple-fill",
+                color: [255, 255, 255, 0],
+                outline: { color: [255, 210, 0, 230], width: 1.2 }
+              }
+            },
+            popupEnabled: false
+          });
+          view.map.add(vicmapPropertyLayer);
+          await vicmapPropertyLayer.load();
+          savedBoundaryVisibility.set(vicmapPropertyLayer, true);
+        } else {
+          const anyVisible = boundaries.some(layer => layer.visible) || vicmapPropertyLayer.visible;
+          const nextVisible = !anyVisible;
+          boundaries.forEach(layer => { layer.visible = nextVisible; });
+          vicmapPropertyLayer.visible = nextVisible;
+        }
+
+        const anyVisibleNow = boundaries.some(layer => layer.visible) || Boolean(vicmapPropertyLayer?.visible);
+        boundariesButton.textContent = anyVisibleNow
+          ? "Hide property boundaries"
+          : "Show property boundaries";
+        boundariesButton.classList.toggle("active", !anyVisibleNow);
+      } catch (error) {
+        console.error("Vicmap Property layer failed to load:", error);
+        alert("Could not load the public Vicmap Property layer. Check your internet connection and browser console.");
+        boundariesButton.textContent = oldLabel;
+      } finally {
+        boundariesButton.disabled = false;
+      }
     });
 
     basemapButton.addEventListener("click", async () => {
