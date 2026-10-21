@@ -288,12 +288,24 @@
     const [
       GraphicsLayer,
       Graphic,
-      colorRendererCreator
+      colorRendererCreator,
+      Search
     ] = await $arcgis.import([
       "@arcgis/core/layers/GraphicsLayer.js",
       "@arcgis/core/Graphic.js",
-      "@arcgis/core/smartMapping/renderers/color.js"
+      "@arcgis/core/smartMapping/renderers/color.js",
+      "@arcgis/core/widgets/Search.js"
     ]);
+
+    // Address/place search in the top-left corner of the scene.
+    // Uses ArcGIS's default geocoding search source.
+    const searchWidget = new Search({
+      view,
+      locationEnabled: false,
+      includeDefaultSources: true,
+      popupEnabled: true
+    });
+    view.ui.add(searchWidget, "top-left");
 
     const selectionLayer = new GraphicsLayer({
       title: "Selected LiDAR Point",
