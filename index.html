@@ -117,6 +117,23 @@
       color: #555;
     }
 
+    .slider-control {
+      margin-top: 14px;
+    }
+
+    .slider-control label {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .slider-control input[type="range"] {
+      width: 100%;
+      accent-color: #087f8c;
+    }
+
     @media (max-width: 500px) {
       #controls-panel {
         top: 10px;
@@ -155,6 +172,24 @@
     </button>
 
     <div id="eye-status">Eye-height mode is off.</div>
+
+    <div class="slider-control">
+      <label for="fov-slider">
+        <span>Camera field of view</span>
+        <strong id="fov-value">55°</strong>
+      </label>
+      <input
+        id="fov-slider"
+        type="range"
+        min="30"
+        max="100"
+        step="1"
+        value="55"
+      />
+      <div class="hint">
+        Narrower view = more zoomed-in perspective; wider view = more surroundings.
+      </div>
+    </div>
 
     <div class="hint">
       In continuous mode, drag to look around and use W/A/S/D to move.
@@ -205,6 +240,8 @@
     const basemapButton = document.querySelector("#basemap-button");
     const buildingsButton = document.querySelector("#buildings-button");
     const rendererButton = document.querySelector("#renderer-button");
+    const fovSlider = document.querySelector("#fov-slider");
+    const fovValue = document.querySelector("#fov-value");
 
     const EYE_HEIGHT = 1.8;
     const MOVE_SPEED = 3.0;
@@ -231,6 +268,22 @@
 
     const view = scene.view;
     originalBasemap = view.map.basemap;
+
+    // Camera field-of-view slider. Keep all other camera properties unchanged.
+    const initialFov = Number.isFinite(view.camera.fov)
+      ? Math.round(view.camera.fov)
+      : 55;
+    fovSlider.value = String(initialFov);
+    fovValue.textContent = `${initialFov}°`;
+
+    fovSlider.addEventListener("input", () => {
+      const fov = Number(fovSlider.value);
+      fovValue.textContent = `${fov}°`;
+
+      const camera = view.camera.clone();
+      camera.fov = fov;
+      view.camera = camera;
+    });
 
     const [
       GraphicsLayer,
@@ -713,7 +766,7 @@
 
       try {
         if (!isGreyBasemap) {
-          view.map.basemap = "gray-3d";
+          view.map.basemap = "gray-vector";
           isGreyBasemap = true;
         } else {
           view.map.basemap = originalBasemap;
