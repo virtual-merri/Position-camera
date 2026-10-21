@@ -646,25 +646,38 @@ WKID: ${srLabel}`;
         attributes: selectedPropertyAttributes
       }));
 
-      // Hide the full point clouds and query only points inside the selected
-      // parcel from each PointCloudLayerView's currently loaded point tiles.
+      // IMPORTANT: query the PointCloudLayerViews BEFORE hiding them. Hiding a
+      // point-cloud layer can unload its client-side tiles, leaving the query
+      // with zero points. Keep the original clouds visible unless a non-empty
+      // parcel result is successfully returned.
       const clouds = pointCloudLayers();
-      clouds.forEach(layer => {
-        if (!pointCloudVisibilityBeforeParcel.has(layer)) {
-          pointCloudVisibilityBeforeParcel.set(layer, layer.visible);
-        }
-        layer.visible = false;
-      });
-
       heightText.textContent = "Filtering…";
-      details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
-Loading LiDAR points inside this property…`;
+      details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
+        "Searching LiDAR points currently loaded in the scene…";
 
       let totalAvailable = 0;
       let renderedCount = 0;
       try {
         for (const layer of clouds) {
           const layerView = await view.whenLayerView(layer);
+          // Let the layer view finish its current update so its loaded point
+          // tiles are available for querying. Do not hide it before this query.
+          if (layerView.updating) {
+            await new Promise(resolve => {
+              let handle;
+              handle = layerView.watch("updating", updating => {
+                if (!updating) {
+                  handle?.remove();
+                  resolve();
+                }
+              });
+              if (!layerView.updating) {
+                handle?.remove();
+                resolve();
+              }
+            });
+          }
+
           const query = layerView.createQuery();
           query.geometry = selectedPropertyGeometry;
           query.spatialRelationship = "intersects";
@@ -693,22 +706,38 @@ Loading LiDAR points inside this property…`;
           if (renderedCount >= MAX_RENDERED_PROPERTY_POINTS) break;
         }
 
-        heightText.textContent = renderedCount ? `${renderedCount.toLocaleString()} points` : "No loaded points";
-        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
-` +
-          `LiDAR points shown inside parcel: ${renderedCount.toLocaleString()}
-` +
-          (totalAvailable > renderedCount
-            ? `Showing a maximum of ${MAX_RENDERED_PROPERTY_POINTS.toLocaleString()} points for performance.
-`
-            : "") +
-          "Only points currently loaded in the scene are queried. Zoom in or wait for the point cloud to load, then select the parcel again for a more complete result.";
+        if (renderedCount > 0) {
+          // Save visibility once and only hide the original clouds when the
+          // replacement graphics layer contains points to show.
+          clouds.forEach(layer => {
+            if (!pointCloudVisibilityBeforeParcel.has(layer)) {
+              pointCloudVisibilityBeforeParcel.set(layer, layer.visible);
+            }
+            layer.visible = false;
+          });
+          heightText.textContent = `${renderedCount.toLocaleString()} points`;
+          details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
+            `LiDAR points shown inside parcel: ${renderedCount.toLocaleString()}\n` +
+            (totalAvailable > renderedCount
+              ? `Showing a maximum of ${MAX_RENDERED_PROPERTY_POINTS.toLocaleString()} points for performance.\n`
+              : "") +
+            "These are the points returned from the currently loaded scene tiles. Clear selection to restore the original point cloud.";
+        } else {
+          // A zero-result query must never blank the scene. The box remains
+          // selected and the original LiDAR remains visible for inspection.
+          filteredPointsLayer.removeAll();
+          restoreOriginalPointCloud();
+          heightText.textContent = "No points returned";
+          details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
+            "No LiDAR points were returned for this parcel from the currently loaded scene tiles. The original LiDAR remains visible. Zoom closer to the parcel, wait for the point cloud to finish loading, then select it again. If this keeps happening, this point-cloud service may not support parcel polygon queries reliably; a server-side clip or preprocessed parcel subset would be needed for exact filtering.";
+        }
       } catch (error) {
         console.error("Property point filtering failed:", error);
+        filteredPointsLayer.removeAll();
+        restoreOriginalPointCloud();
         heightText.textContent = "Filter unavailable";
-        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}
-` +
-          "The parcel is selected, but the scene could not query its loaded LiDAR points. The full point cloud has been hidden; clear the selection to restore it.";
+        details.textContent = `${getPropertyLabel(selectedPropertyAttributes)}\n` +
+          "The parcel is selected, but the LiDAR service could not return points for the polygon query. The original point cloud has been kept visible. Clear selection to remove the parcel box.";
       }
     }
 
