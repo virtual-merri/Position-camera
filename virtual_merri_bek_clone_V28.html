@@ -90,7 +90,7 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
           else { skipped++; return; }
         }else{
           const symbol=new MeshSymbol3D({symbolLayers:[new FillSymbol3DLayer({
-            material:{color:[255,255,255,1],colorMixMode:'tint'},
+            material:{color:buildingTexturesEnabled?[255,255,255,1]:[178,190,198,1],colorMixMode:buildingTexturesEnabled?'tint':'replace'},
             edges:buildingOutlinesEnabled?{type:'solid',color:[25,38,45,1],size:1.25}:null
           })]});
           layer.renderer=new SimpleRenderer({symbol});
@@ -274,7 +274,7 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
       const marker=new Graphic({geometry:p,attributes:{__streetPin:true,pinId},symbol:{type:'picture-marker',url:'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(pinSvg),width:32,height:39,yoffset:19.5}});
       const textGraphic=new Graphic({geometry:p,attributes:{__streetPin:true,pinId},symbol:{type:'text',text:label,color:'#ffffff',haloColor:'#102b3a',haloSize:2,font:{size:12,family:'Arial',weight:'bold'},xoffset:68,yoffset:45,backgroundColor:[13,35,47,245],borderLineColor:[255,153,35,255],borderLineSize:2,lineWidth:1}});
       const closeGraphic=new Graphic({geometry:p,attributes:{__streetPin:true,__pinClose:true,pinId},symbol:{type:'text',text:'×',color:'#ffffff',haloColor:'#7d1c1c',haloSize:0,font:{size:11,family:'Arial',weight:'bold'},xoffset:180,yoffset:60,backgroundColor:[190,45,45,255],borderLineColor:[255,255,255,255],borderLineSize:1}});
-      view.graphics.addMany([marker,centre,textGraphic,closeGraphic]);
+      view.graphics.addMany([marker,textGraphic,closeGraphic]);
       status('Pin placed · '+gps+' · Height above ground: '+(height===null?'unavailable':height.toFixed(2)+' m'));
     }catch(e){console.error('Could not place pin',e);status('Could not place pin at this location.',true);}
   }
