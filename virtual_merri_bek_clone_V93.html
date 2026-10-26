@@ -1134,9 +1134,8 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
         let allX=[],allY=[],allZ=[];
         records.forEach((rec,i)=>{
           const pts=rec.points,parts=rec.parts,types=rec.partTypes;
-          const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),zs=pts.map(p=>p[2]);
-          const xmin=Math.min(...xs),ymin=Math.min(...ys),xmax=Math.max(...xs),ymax=Math.max(...ys),zmin=Math.min(...zs),zmax=Math.max(...zs);
-          allX.push(...xs);allY.push(...ys);allZ.push(...zs);
+          let xmin=Infinity,ymin=Infinity,xmax=-Infinity,ymax=-Infinity,zmin=Infinity,zmax=-Infinity;
+          pts.forEach(p=>{const x=p[0],y=p[1],z=p[2];if(x<xmin)xmin=x;if(x>xmax)xmax=x;if(y<ymin)ymin=y;if(y>ymax)ymax=y;if(z<zmin)zmin=z;if(z>zmax)zmax=z;allX.push(x);allY.push(y);allZ.push(z);});
           const contentBytes=4+32+4+4+parts.length*4+types.length*4+pts.length*16+16+pts.length*8+16+pts.length*8;
           const buf=new ArrayBuffer(contentBytes),dv=new DataView(buf);let o=0;
           mpPutI32LE(dv,o,shapeType);o+=4;
@@ -1155,7 +1154,8 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
           const xh=new ArrayBuffer(8),xdv=new DataView(xh);mpPutU32BE(xdv,0,shpOffsetWords);mpPutU32BE(xdv,4,contentBytes/2);
           shxRecords.push(new Uint8Array(xh));shpOffsetWords+=4+contentBytes/2;
         });
-        const xmin=Math.min(...allX),ymin=Math.min(...allY),xmax=Math.max(...allX),ymax=Math.max(...allY),zmin=Math.min(...allZ),zmax=Math.max(...allZ);
+        let xmin=Infinity,ymin=Infinity,xmax=-Infinity,ymax=-Infinity,zmin=Infinity,zmax=-Infinity;
+        records.forEach(rec=>rec.points.forEach(p=>{if(p[0]<xmin)xmin=p[0];if(p[0]>xmax)xmax=p[0];if(p[1]<ymin)ymin=p[1];if(p[1]>ymax)ymax=p[1];if(p[2]<zmin)zmin=p[2];if(p[2]>zmax)zmax=p[2];}));
         function header(fileBytes){const b=new ArrayBuffer(100),d=new DataView(b);mpPutU32BE(d,0,9994);mpPutU32BE(d,24,fileBytes/2);mpPutI32LE(d,28,1000);mpPutI32LE(d,32,shapeType);[xmin,ymin,xmax,ymax,zmin,zmax,0,0].forEach((v,i)=>mpPutF64LE(d,36+i*8,v));return new Uint8Array(b);}
         const shpBody=mpConcatBytes(shpRecords),shp=mpConcatBytes([header(100+shpBody.length),shpBody]);
         const shxBody=mpConcatBytes(shxRecords),shx=mpConcatBytes([header(100+shxBody.length),shxBody]);
