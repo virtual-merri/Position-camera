@@ -1171,7 +1171,7 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
       function mpTrianglesForGraphic(g,projectedRing){
         let ring=projectedRing.map(p=>[p[0],p[1]]);if(ring.length>1&&ring[0][0]===ring.at(-1)[0]&&ring[0][1]===ring.at(-1)[1])ring.pop();
         if(ring.length<3)return null;
-        const base=Number(g.attributes.baseElevation)||0,h=Math.max(1,Number(g.attributes.height)||3),bottom=ring.map(p=>[p[0],p[1],base]),top=ring.map(p=>[p[0],p[1],base+h]);
+        const vertexZ=ring.map(p=>Number(p[2])).filter(Number.isFinite),base=vertexZ.length?vertexZ.reduce((a,v)=>a+v,0)/vertexZ.length:(Number(g.attributes.baseElevation)||0),h=Math.max(1,Number(g.attributes.height)||3),bottom=ring.map(p=>[p[0],p[1],Number.isFinite(Number(p[2]))?Number(p[2]):base]),top=ring.map(p=>[p[0],p[1],(Number.isFinite(Number(p[2]))?Number(p[2]):base)+h]);
         const points=[],parts=[],partTypes=[];
         const tri=(a,b,c)=>{parts.push(points.length);partTypes.push(0);points.push(a,b,c);};
         // Roof and underside triangulated as fans; each triangle is a valid 3-point TriangleStrip.
