@@ -1055,18 +1055,6 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
       await view.goTo(extent,{duration:450});
     }catch(e){status('Could not show viewpoint map: '+(e.message||e),true);}
   });
-  view.on('click',async event=>{
-    if(!viewpointMarkersVisible||!viewpointGraphicsLayer)return;
-    try{
-      const hit=await view.hitTest(event);
-      const marker=(hit.results||[]).map(r=>r.graphic).find(g=>g?.attributes?.__viewpointMarker&&g.attributes.viewpointId);
-      if(!marker)return;
-      const item=readViewpoints().find(v=>v.id===marker.attributes.viewpointId);
-      if(!item?.camera)return;
-      await view.goTo(item.camera,{duration:1200});
-      status('Moved camera to viewpoint: '+(item.name||'Saved viewpoint'));
-    }catch(err){console.warn('Could not navigate to viewpoint',err);}
-  });
   $('toggleViewpointMarkersBtn').addEventListener('click',()=>{
     viewpointMarkersVisible=!viewpointMarkersVisible;
     $('toggleViewpointMarkersBtn').textContent='Show/hide viewpoint locations';
@@ -1649,6 +1637,19 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
   viewpointGraphicsLayer=new GraphicsLayer({title:'Saved viewpoint cameras',listMode:'hide'});
   scene.add(viewpointGraphicsLayer);
     view = new SceneView({container:'viewDiv',map:scene,qualityProfile:'high',popup:{dockEnabled:true,dockOptions:{position:'right',breakpoint:false,buttonEnabled:false}},environment:{lighting:{type:'sun',date:new Date(),directShadowsEnabled:true}}});
+  view.on('click',async event=>{
+    if(!viewpointMarkersVisible||!viewpointGraphicsLayer)return;
+    try{
+      const hit=await view.hitTest(event);
+      const marker=(hit.results||[]).map(r=>r.graphic).find(g=>g?.attributes?.__viewpointMarker&&g.attributes.viewpointId);
+      if(!marker)return;
+      const item=readViewpoints().find(v=>v.id===marker.attributes.viewpointId);
+      if(!item?.camera)return;
+      await view.goTo(item.camera,{duration:1200});
+      status('Moved camera to viewpoint: '+(item.name||'Saved viewpoint'));
+    }catch(err){console.warn('Could not navigate to viewpoint',err);}
+  });
+
     searchWidget=new Search({view,includeDefaultSources:true});
     // Surface scene-load failures instead of leaving the splash spinner running forever.
     let vm3dLoadSettled=false;
