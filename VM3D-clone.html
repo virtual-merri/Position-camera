@@ -1650,6 +1650,22 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
   scene.add(viewpointGraphicsLayer);
     view = new SceneView({container:'viewDiv',map:scene,qualityProfile:'high',popup:{dockEnabled:true,dockOptions:{position:'right',breakpoint:false,buttonEnabled:false}},environment:{lighting:{type:'sun',date:new Date(),directShadowsEnabled:true}}});
     searchWidget=new Search({view,includeDefaultSources:true});
+    // Surface scene-load failures instead of leaving the splash spinner running forever.
+    let vm3dLoadSettled=false;
+    const vm3dLoadTimer=setTimeout(()=>{
+      if(!vm3dLoadSettled){
+        const message=$('loadMessage');
+        if(message)message.textContent='The 3D scene is taking longer than expected. Check your connection to ArcGIS Online, then refresh the page.';
+      }
+    },25000);
+    view.when(()=>{
+      vm3dLoadSettled=true;clearTimeout(vm3dLoadTimer);
+    },err=>{
+      vm3dLoadSettled=true;clearTimeout(vm3dLoadTimer);
+      console.error('VM3D scene failed to load',err);
+      const message=$('loadMessage');
+      if(message)message.textContent='Could not load the 3D scene: '+(err&&err.message?err.message:'ArcGIS Online connection failed')+'. Please refresh or try another network.';
+    });
     view.when(async()=>{
       initialCamera=view.camera.clone();$('loading').classList.add('hidden');openIntro();loadSplashAdvertisedModels();renderLayers();
       $('buildingTexturesToggle').addEventListener('change',e=>{buildingTexturesEnabled=e.target.checked;applyBuildingAppearance();});
