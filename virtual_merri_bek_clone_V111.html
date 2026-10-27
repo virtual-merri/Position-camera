@@ -311,6 +311,7 @@ require(["esri/WebScene","esri/views/SceneView","esri/Camera","esri/widgets/Elev
     if(!before.length&&!after.length){$('compareStatus').textContent='Select at least one Before or After layer first.';return;}
     if(before.some(layer=>after.includes(layer))){$('compareStatus').textContent='The same layer is selected in both lists. Remove it from one list for a meaningful comparison.';return;}
     if(!compareActive){compareOriginalStates=captureCompareOriginalStates();compareActive=true;}
+    else if(compareOriginalStates){compareOriginalStates.forEach((state,layer)=>{try{layer.visible=state.visible;layer.opacity=state.opacity;}catch(e){}});}
     applyComparePosition();
   }
   $('compareApplyBtn').addEventListener('click',startLayerComparison);
