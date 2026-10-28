@@ -2007,6 +2007,7 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
   let groundImageGraphic=null, groundImageLayer=null, groundImageDataUrl=null, groundImageObjectUrl=null, groundImageNaturalSize=null, groundImageTransformVM=null;
   const groundImageStatus=(message,bad=false)=>{const el=$("groundImageStatus");if(el){el.textContent=message;el.style.color=bad?"#ff9b8f":"";}};
   const readImageDimensions=dataUrl=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve({width:img.naturalWidth,height:img.naturalHeight});img.onerror=()=>reject(new Error("The selected file could not be read as an image."));img.src=dataUrl;});
+  const normaliseImageDataUrl=dataUrl=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{try{const canvas=document.createElement("canvas");canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;canvas.getContext("2d").drawImage(img,0,0);resolve(canvas.toDataURL("image/png"));}catch(err){reject(err);}};img.onerror=()=>reject(new Error("Could not decode the selected image."));img.src=dataUrl;});
   const bytesFromDataUrl=dataUrl=>{const raw=atob(dataUrl.split(",")[1]||"");const out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out;};
   const makeTexturedPlaneGLB=(width,depth,imageDataUrl,opacity)=>{
     const positions=new Float32Array([-width/2,0,-depth/2,width/2,0,-depth/2,width/2,0,depth/2,-width/2,0,depth/2]);
@@ -2049,7 +2050,7 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
     const origin=new Point({latitude:placement.lat,longitude:placement.lon,z:groundZ+0.15,spatialReference:{wkid:4326}});
     const mesh=await Mesh.createFromGLTF(origin,groundImageObjectUrl);await mesh.load();
     if(placement.rotation)mesh.rotate(placement.rotation,"Z",origin);
-    const graphic=new Graphic({geometry:mesh,attributes:{name,__groundImageGuide:true,widthMeters:placement.width,depthMeters:placement.depth,rotation:placement.rotation,opacity:placement.opacity,imageDataUrl:groundImageDataUrl},symbol:{type:"mesh-3d",symbolLayers:[{type:"fill",material:{color:[255,255,255,1]}}]}});
+    const graphic=new Graphic({geometry:mesh,attributes:{name,__groundImageGuide:true,widthMeters:placement.width,depthMeters:placement.depth,rotation:placement.rotation,opacity:placement.opacity,imageDataUrl:groundImageDataUrl},symbol:{type:"mesh-3d",symbolLayers:[{type:"fill",material:{color:[255,255,255,placement.opacity],colorMixMode:"tint"}}]}});
     if(!groundImageLayer){groundImageLayer=new GraphicsLayer({title:"Imported ground image guides",listMode:"show"});view.map.add(groundImageLayer);}
     stopGroundImageTransform();
     if(groundImageGraphic)groundImageLayer.remove(groundImageGraphic);
@@ -2061,7 +2062,7 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
     if(!/^image\/(png|jpeg|webp)$/.test(file.type))throw new Error("Choose a PNG, JPG or WebP image.");
     if(file.size>20*1024*1024)throw new Error("The image is larger than 20 MB. Please use a smaller image.");
     const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error("Could not read the image file."));reader.readAsDataURL(file);});
-    const dimensions=await readImageDimensions(dataUrl);groundImageDataUrl=dataUrl;groundImageNaturalSize=dimensions;
+    const dimensions=await readImageDimensions(dataUrl);groundImageDataUrl=await normaliseImageDataUrl(dataUrl);groundImageNaturalSize=dimensions;
     $("groundImageName").value=file.name.replace(/\.[^.]+$/,"");
     const aspect=dimensions.width/Math.max(1,dimensions.height);$("groundImageDepth").value=(Number($("groundImageWidth").value)/aspect).toFixed(2);
     groundImageStatus("Loaded "+file.name+" ("+dimensions.width+" × "+dimensions.height+" px). Set the real-world width and centre GPS, then import.");
