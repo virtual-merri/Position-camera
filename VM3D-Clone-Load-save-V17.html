@@ -2103,8 +2103,7 @@ $('screenshotBtn').addEventListener('click',async()=>{try{if(!view?.ready)throw 
         let restoredMesh=null;
         if(savedGeometry){
           try{
-            if(Array.isArray(freshTexturedMesh.components)&&freshTexturedMesh.components.length)savedGeometry.components=freshTexturedMesh.components;
-            if(typeof savedGeometry.load==="function")await savedGeometry.load();
+            if(freshTexturedMesh.components)savedGeometry.components=freshTexturedMesh.components;
             restoredMesh=savedGeometry;
           }catch(err){console.warn("Could not merge saved image transform with rebuilt texture; using fresh mesh",err);}
         }
